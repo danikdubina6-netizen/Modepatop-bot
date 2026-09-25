@@ -5,19 +5,15 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BotCommand, ChatPermissions
 
-# Включаем логирование для бота
 logging.basicConfig(level=logging.INFO)
 
-# ТОКЕН БОТА (Вставлен прямо в код)
 TOKEN = "8726690670:AAGeO4bC1Ncpclb_X8R_XCNaG8nTgkC2-SU"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# База данных для варнов в памяти: {chat_id: {user_id: count}}
 warnings = {}
 
-# Текст правил группы
 GROUP_RULES = (
     "Привет! Добро пожаловать в группу.\n"
     "Вот основные правила:\n"
@@ -27,7 +23,6 @@ GROUP_RULES = (
 )
 
 
-# --- НАСТРОЙКА ГЛАВНЫХ ПУНКТОВ МЕНЮ (КНОПКА "/") ---
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
         BotCommand(command="ban", description="Забанить пользователя (в ответ)"),
@@ -43,7 +38,6 @@ async def set_main_menu(bot: Bot):
     await bot.set_my_commands(main_menu_commands)
 
 
-# --- ПРИВЕТСТВИЕ И ОТПРАВКА ПРАВИЛ ПРИ ВХОДЕ ---
 @dp.chat_member()
 async def welcome_user(event: types.ChatMemberUpdated):
     if (
@@ -56,13 +50,11 @@ async def welcome_user(event: types.ChatMemberUpdated):
         )
 
 
-# --- КОМАНДА: ПРАВИЛА (/rules) ---
 @dp.message(Command("rules"))
 async def cmd_rules(message: types.Message):
     await message.answer(GROUP_RULES)
 
 
-# --- КОМАНДА: БАН (/ban) ---
 @dp.message(Command("ban"))
 async def cmd_ban(message: types.Message):
     if not message.reply_to_message:
@@ -70,34 +62,33 @@ async def cmd_ban(message: types.Message):
             "Эту команду нужно использовать в ответ на сообщение нарушителя!"
         )
         return
-
-    chat_id = message.chat.id
-    user_to_ban = message.reply_to_message.from_user
-
     try:
-        await bot.ban_chat_member(chat_id=chat_id, user_id=user_to_ban.id)
+        await bot.ban_chat_member(
+            chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id
+        )
         await message.answer(
-            f"Пользователь {user_to_ban.full_name} был забанен."
+            f"Пользователь {message.reply_to_message.from_user.full_name} забанен."
         )
     except Exception as e:
-        await message.answer(
-            f"Не удалось забанить пользователя. Убедитесь, что бот — администратор.\nОшибка: {e}"
-        )
+        await message.answer(f"Ошибка бана: {e}")
 
 
-# --- КОМАНДА: РАЗБАН (/unban) ---
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
     if not message.reply_to_message:
-        await message.reply(
-            "Эту команду нужно использовать в ответ на сообщение пользователя!"
-        )
+        await message.reply("Используйте в ответ на сообщение пользователя!")
         return
-
-    chat_id = message.chat.id
-    user_to_unban = message.reply_to_message.from_user
-
     try:
-        await bot.unban_chat_member(chat_id=chat_id, user_id=user_to_unban.id)
+        await bot.unban_chat_member(
+            chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id
+        )
         await message.answer(
-            f"Пользователь {user_to_unban
+            f"Пользователь {message.reply_to_message.from_user.full_name} разбанен."
+        )
+    except Exception as e:
+        await message.answer(f"Ошибка разбана: {e}")
+
+
+@dp.message(Command("mute"))
+async def cmd_mute(message: types.Message):
+    if not message.reply_to_message:
