@@ -1,13 +1,12 @@
-name: Scheduled Runner Check
+name: Bot Check Workflow
 
 on:
+  workflow_dispatch:
   schedule:
-    # Запуск каждые 5 часов (в 0 минут, каждые 5 часов: 0, 5, 10, 15 и т.д.)
     - cron: '0 */5 * * *'
-  workflow_dispatch: # Позволяет также запускать этот процесс вручную кнопкой на GitHub
 
 jobs:
-  run-check:
+  run-bot-check:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,7 +23,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run bot script test
+    - name: Run test
       run: |
-        # Здесь проверяется работоспособность скрипта
-        echo "Раннер запущен по расписанию."
+        echo "Раннер успешно создан и запущен!"
+        python -m py_compile bot.py
