@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BotCommand, ChatPermissions
 
-# Включаем логирование
+# Включаем логирование для бота
 logging.basicConfig(level=logging.INFO)
 
 # ТОКЕН БОТА (Вставлен прямо в код)
