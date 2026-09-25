@@ -1,29 +1,31 @@
-name: Bot Check Workflow
+name: CI
 
 on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'
 
 jobs:
-  run-bot-check:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
+    - name: Get code from repository
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Set up Python 3.10
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: "3.10"
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run test
+    - name: Run script test
       run: |
-        echo "Раннер успешно создан и запущен!"
+        echo "Рабочий процесс успешно запущен!"
         python -m py_compile bot.py
