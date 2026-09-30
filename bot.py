@@ -29,9 +29,9 @@ def get_rules_text():
 
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
-        BotCommand(command="ban", description="Забанить пользователя (в ответ)"),
+        BotCommand(command="ban", description="Забанить (навсегда или /ban 1 час)"),
         BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
-        BotCommand(command="mute", description="Замутить (например: /mute 1 час)"),
+        BotCommand(command="mute", description="Замутить (навсегда или /mute 30 минут)"),
         BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
         BotCommand(command="rules", description="Показать правила группы"),
         BotCommand(command="addrule", description="Добавить правило (только владелец)"),
@@ -102,6 +102,7 @@ async def cmd_del_rule(message: types.Message):
         await message.reply("❌ Нет правила с таким номером! Проверь список через `/rules`.")
 
 
+# Команда бана с поддержкой времени (или навсегда)
 @dp.message(Command("ban"))
 async def cmd_ban(message: types.Message):
     if not await is_owner(message):
@@ -110,13 +111,41 @@ async def cmd_ban(message: types.Message):
     if not message.reply_to_message:
         await message.reply("Эту команду нужно использовать в ответ на сообщение нарушителя!")
         return
+
+    args = message.text.split()
+    until_date = None
+    time_text = "навсегда"
+
+    # Если передано время, например: /ban 1 час или /ban 24 часа
+    if len(args) >= 2:
+        try:
+            amount = int(args[1])
+            unit = args[2].lower() if len(args) > 2 else "мин"
+            
+            if "час" in unit or "ч" in unit:
+                duration_minutes = amount * 60
+                time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
+            elif "д" in unit:
+                duration_minutes = amount * 24 * 60
+                time_text = f"на {amount} день/дней"
+            else:
+                duration_minutes = amount
+                time_text = f"на {amount} минут(ы)"
+            
+            until_date = datetime.now() + timedelta(minutes=duration_minutes)
+        except ValueError:
+            pass
+
     try:
-        await bot.ban_chat_member(
-            chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id
-        )
-        await message.answer(
-            f"Пользователь {message.reply_to_message.from_user.full_name} забанен владельцем."
-        )
+        user_id = message.reply_to_message.from_user.id
+        user_name = message.reply_to_message.from_user.full_name
+        
+        if until_date:
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=user_id, until_date=until_date)
+        else:
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=user_id)
+            
+        await message.answer(f"Пользователь {user_name} забанен владельцем {time_text}.")
     except Exception as e:
         await message.answer(f"Ошибка бана: {e}")
 
@@ -140,7 +169,7 @@ async def cmd_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# Измененная команда мута с поддержкой времени
+# Команда мута (по умолчанию навсегда, либо с указанием времени)
 @dp.message(Command("mute"))
 async def cmd_mute(message: types.Message):
     if not await is_owner(message):
@@ -151,8 +180,8 @@ async def cmd_mute(message: types.Message):
         return
     
     args = message.text.split()
-    duration_minutes = 5  # По умолчанию 5 минут, если время не указано
-    time_text = "5 минут"
+    until_date = None  # None означает навсегда в Telegram для restrict
+    time_text = "навсегда"
 
     if len(args) >= 2:
         try:
@@ -161,25 +190,26 @@ async def cmd_mute(message: types.Message):
             
             if "час" in unit or "ч" in unit:
                 duration_minutes = amount * 60
-                time_text = f"{amount} час(а)" if amount < 5 else f"{amount} часов"
+                time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
             elif "д" in unit:
                 duration_minutes = amount * 24 * 60
-                time_text = f"{amount} день/дней"
+                time_text = f"на {amount} день/дней"
             else:
                 duration_minutes = amount
-                time_text = f"{amount} минут(ы)"
+                time_text = f"на {amount} минут(ы)"
+                
+            until_date = datetime.now() + timedelta(minutes=duration_minutes)
         except ValueError:
-            await message.reply("❌ Неверный формат времени! Пример:\n`/mute 1 час` или `/mute 30 минут`", parse_mode="Markdown")
+            await message.reply("❌ Неверный формат времени! Пример:\n`/mute` (навсегда) или `/mute 1 час`", parse_mode="Markdown")
             return
 
     try:
-        until_date = datetime.now() + timedelta(minutes=duration_minutes)
         await message.chat.restrict(
             user_id=message.reply_to_message.from_user.id,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=until_date
         )
-        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name} замучен на {time_text}.")
+        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name} замучен {time_text}.")
     except Exception as e:
         await message.answer(f"Ошибка мута: {e}")
 
