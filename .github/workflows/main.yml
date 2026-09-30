@@ -1,7 +1,9 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch: # Позволяет запускать бота вручную кнопкой на сайте GitHub
+  workflow_dispatch: # Оставляем ручной запуск кнопкой
+  schedule:
+    - cron: '0 */5 * * *' # Запускать каждые 5 часов автоматически
 
 jobs:
   run-bot:
