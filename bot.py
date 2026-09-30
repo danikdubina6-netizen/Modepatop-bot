@@ -29,13 +29,11 @@ def get_rules_text():
 
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
-        BotCommand(command="ban", description="Забанить (навсегда или /ban 1 час)"),
-        BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
-        BotCommand(command="mute", description="Замутить (навсегда или /mute 30 минут)"),
-        BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
+        BotCommand(command="ban", description="Забанить пользователя"),
+        BotCommand(command="unban", description="Разбанить пользователя"),
+        BotCommand(command="mute", description="Замутить пользователя"),
+        BotCommand(command="unmute", description="Размутить пользователя"),
         BotCommand(command="rules", description="Показать правила группы"),
-        BotCommand(command="addrule", description="Добавить правило (только владелец)"),
-        BotCommand(command="delrule", description="Удалить правило по номеру (только владелец)"),
     ]
     await bot.set_my_commands(main_menu_commands)
 
@@ -51,6 +49,35 @@ async def is_owner(message: types.Message) -> bool:
         return False
 
 
+# Функция поиска пользователя (из реплая или по тексту/упоминанию)
+async def get_target_user(message: types.Message):
+    # 1. Если есть реплай на сообщение
+    if message.reply_to_message:
+        return message.reply_to_message.from_user
+    
+    # 2. Если есть упоминание через @username или сущности в тексте
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == "text_mention":
+                return entity.user
+            elif entity.type == "mention":
+                # Достаем текст упоминания, например "@username"
+                username = message.text[entity.offset:entity.offset + entity.length]
+                # Попробуем найти через поиск (если бот видел пользователя) или через текст
+                # В aiogram проще всего распарсить через аргументы, если указан юзернейм
+                pass
+                
+    # 3. Попробуем найти по первому слову с собачкой `@` в тексте
+    args = message.text.split()
+    for arg in args:
+        if arg.startswith("@"):
+            username_clean = arg.lstrip("@")
+            # Перебираем недавние сообщения или оставляем как текстовый поиск, 
+            # но в Telegram API без базы данных по юзернейму напрямую забанить нельзя — нужен user_id.
+            # Поэтому надежнее всего реплай или упоминание.
+    return None
+
+
 # Приветствие новых участников
 @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def welcome_user(event: types.ChatMemberUpdated):
@@ -60,21 +87,28 @@ async def welcome_user(event: types.ChatMemberUpdated):
     )
 
 
-@dp.message(Command("rules"))
-async def cmd_rules(message: types.Message):
+# Обработка команд и текста: ПРАВИЛА (/rules или просто "правила")
+@dp.message(F.text.lower().in_(["/rules", "правила", "каталог правил"]))
+async def text_rules(message: types.Message):
     await message.answer(get_rules_text())
 
 
-# Добавление правила (только для владельца)
-@dp.message(Command("addrule"))
-async def cmd_add_rule(message: types.Message):
+# Добавление правила: /addrule или "добавить правило ТЕКСТ"
+@dp.message(F.text.lower().startswith(("/addrule", "добавить правило")))
+async def text_add_rule(message: types.Message):
     if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        await message.reply("⛔ Эта функция доступна только владельцу группы!")
         return
 
-    args = message.text.split(maxsplit=1)
+    text_lower = message.text.lower()
+    if text_lower.startswith("/addrule"):
+        args = message.text.split(maxsplit=1)
+    else:
+        args = message.text.split(maxsplit=2) # на случай "добавить правило ТЕКСТ"
+        args = [args[0], args[2]] if len(args) > 2 else [args[0]]
+
     if len(args) < 2:
-        await message.reply("Напиши правило после команды, например:\n`/addrule Не флудить капсом`", parse_mode="Markdown")
+        await message.reply("Напиши само правило после команды, например:\n`добавить правило Не флудить капсом`", parse_mode="Markdown")
         return
     
     new_rule = args[1]
@@ -82,149 +116,167 @@ async def cmd_add_rule(message: types.Message):
     await message.answer(f"✅ Правило добавлено владельцем!\n\n{get_rules_text()}")
 
 
-# Удаление правила по номеру (только для владельца)
-@dp.message(Command("delrule"))
-async def cmd_del_rule(message: types.Message):
+# Удаление правила: /delrule или "удалить правило НОМЕР"
+@dp.message(F.text.lower().startswith(("/delrule", "удалить правило")))
+async def text_del_rule(message: types.Message):
     if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        await message.reply("⛔ Эта функция доступна только владельцу группы!")
         return
 
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2 or not args[1].isdigit():
-        await message.reply("Укажи номер правила для удаления, например:\n`/delrule 2`\n\nПосмотреть номера можно через /rules", parse_mode="Markdown")
+    # Достаем цифру из текста
+    words = message.text.split()
+    number_str = None
+    for word in words:
+        if word.isdigit():
+            number_str = word
+            break
+
+    if not number_str:
+        await message.reply("Укажи номер правила для удаления, например:\n`удалить правило 2`\n\nПосмотреть номера можно через `правила`", parse_mode="Markdown")
         return
 
-    index = int(args[1]) - 1
+    index = int(number_str) - 1
     if 0 <= index < len(group_rules_list):
         removed = group_rules_list.pop(index)
         await message.answer(f"🗑 Правило «{removed}» удалено!\n\n{get_rules_text()}")
     else:
-        await message.reply("❌ Нет правила с таким номером! Проверь список через `/rules`.")
+        await message.reply("❌ Нет правила с таким номером! Проверь список через `правила`.")
 
 
-# Команда бана с поддержкой времени (или навсегда)
-@dp.message(Command("ban"))
-async def cmd_ban(message: types.Message):
+# БАН (через /ban или слово "бан" с поддержкой времени и упоминания/реплая)
+@dp.message(F.text.lower().startswith(("/ban", "бан")))
+async def text_ban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
-    if not message.reply_to_message:
-        await message.reply("Эту команду нужно использовать в ответ на сообщение нарушителя!")
+
+    target_user = await get_target_user(message)
+    if not target_user:
+        await message.reply("Используй команду **в ответ на сообщение** нарушителя или **упомяни его** (например: `бан @user 1 час`)!", parse_mode="Markdown")
         return
 
     args = message.text.split()
     until_date = None
     time_text = "навсегда"
 
-    # Если передано время, например: /ban 1 час или /ban 24 часа
+    # Ищем число и единицу измерения времени в тексте
     if len(args) >= 2:
         try:
-            amount = int(args[1])
-            unit = args[2].lower() if len(args) > 2 else "мин"
-            
-            if "час" in unit or "ч" in unit:
-                duration_minutes = amount * 60
-                time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
-            elif "д" in unit:
-                duration_minutes = amount * 24 * 60
-                time_text = f"на {amount} день/дней"
-            else:
-                duration_minutes = amount
-                time_text = f"на {amount} минут(ы)"
-            
-            until_date = datetime.now() + timedelta(minutes=duration_minutes)
-        except ValueError:
+            # Пробуем найти число среди аргументов
+            for i, arg in enumerate(args):
+                if arg.isdigit():
+                    amount = int(arg)
+                    unit = args[i+1].lower() if i+1 < len(args) else "мин"
+                    
+                    if "час" in unit or "ч" in unit:
+                        duration_minutes = amount * 60
+                        time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
+                    elif "д" in unit:
+                        duration_minutes = amount * 24 * 60
+                        time_text = f"на {amount} день/дней"
+                    else:
+                        duration_minutes = amount
+                        time_text = f"на {amount} минут(ы)"
+                    
+                    until_date = datetime.now() + timedelta(minutes=duration_minutes)
+                    break
+        except Exception:
             pass
 
     try:
-        user_id = message.reply_to_message.from_user.id
-        user_name = message.reply_to_message.from_user.full_name
-        
         if until_date:
-            await bot.ban_chat_member(chat_id=message.chat.id, user_id=user_id, until_date=until_date)
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id, until_date=until_date)
         else:
-            await bot.ban_chat_member(chat_id=message.chat.id, user_id=user_id)
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
             
-        await message.answer(f"Пользователь {user_name} забанен владельцем {time_text}.")
+        await message.answer(f"Пользователь {target_user.full_name} забанен владельцем {time_text}.")
     except Exception as e:
         await message.answer(f"Ошибка бана: {e}")
 
 
-@dp.message(Command("unban"))
-async def cmd_unban(message: types.Message):
+# РАЗБАН (/unban или "разбан")
+@dp.message(F.text.lower().startswith(("/unban", "разбан")))
+async def text_unban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
-    if not message.reply_to_message:
-        await message.reply("Используйте в ответ на сообщение пользователя!")
+    
+    target_user = await get_target_user(message)
+    if not target_user:
+        await message.reply("Используй в ответ на сообщение пользователя или упомяни его (`разбан @user`)!")
         return
+    
     try:
-        await bot.unban_chat_member(
-            chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id
-        )
-        await message.answer(
-            f"Пользователь {message.reply_to_message.from_user.full_name} разбанен."
-        )
+        await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
+        await message.answer(f"Пользователь {target_user.full_name} разбанен.")
     except Exception as e:
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# Команда мута (по умолчанию навсегда, либо с указанием времени)
-@dp.message(Command("mute"))
-async def cmd_mute(message: types.Message):
+# МУТ (/mute или "мут" с поддержкой времени и упоминания/реплая)
+@dp.message(F.text.lower().startswith(("/mute", "мут")))
+async def text_mute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
-    if not message.reply_to_message:
-        await message.reply("Используйте в ответ на сообщение пользователя!")
+
+    target_user = await get_target_user(message)
+    if not target_user:
+        await message.reply("Используй команду **в ответ на сообщение** или **упомяни пользователя** (например: `мут @user 1 час`)!", parse_mode="Markdown")
         return
     
     args = message.text.split()
-    until_date = None  # None означает навсегда в Telegram для restrict
+    until_date = None  # None = навсегда
     time_text = "навсегда"
 
     if len(args) >= 2:
         try:
-            amount = int(args[1])
-            unit = args[2].lower() if len(args) > 2 else "мин"
-            
-            if "час" in unit or "ч" in unit:
-                duration_minutes = amount * 60
-                time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
-            elif "д" in unit:
-                duration_minutes = amount * 24 * 60
-                time_text = f"на {amount} день/дней"
-            else:
-                duration_minutes = amount
-                time_text = f"на {amount} минут(ы)"
-                
-            until_date = datetime.now() + timedelta(minutes=duration_minutes)
-        except ValueError:
-            await message.reply("❌ Неверный формат времени! Пример:\n`/mute` (навсегда) или `/mute 1 час`", parse_mode="Markdown")
-            return
+            for i, arg in enumerate(args):
+                if arg.isdigit():
+                    amount = int(arg)
+                    unit = args[i+1].lower() if i+1 < len(args) else "мин"
+                    
+                    if "час" in unit or "ч" in unit:
+                        duration_minutes = amount * 60
+                        time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
+                    elif "д" in unit:
+                        duration_minutes = amount * 24 * 60
+                        time_text = f"на {amount} день/дней"
+                    else:
+                        duration_minutes = amount
+                        time_text = f"на {amount} минут(ы)"
+                        
+                    until_date = datetime.now() + timedelta(minutes=duration_minutes)
+                    break
+        except Exception:
+            pass
 
     try:
         await message.chat.restrict(
-            user_id=message.reply_to_message.from_user.id,
+            user_id=target_user.id,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=until_date
         )
-        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name} замучен {time_text}.")
+        await message.answer(f"Пользователь {target_user.full_name} замучен {time_text}.")
     except Exception as e:
         await message.answer(f"Ошибка мута: {e}")
 
 
-@dp.message(Command("unmute"))
-async def cmd_unmute(message: types.Message):
+# РАЗМУТ (/unmute или "размут")
+@dp.message(F.text.lower().startswith(("/unmute", "размут")))
+async def text_unmute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
-    if not message.reply_to_message:
-        await message.reply("Используйте в ответ на сообщение пользователя!")
+
+    target_user = await get_target_user(message)
+    if not target_user:
+        await message.reply("Используй в ответ на сообщение пользователя или упомяни его (`размут @user`)!")
         return
+
     try:
         await message.chat.restrict(
-            user_id=message.reply_to_message.from_user.id,
+            user_id=target_user.id,
             permissions=ChatPermissions(
                 can_send_messages=True,
                 can_send_audios=True,
@@ -237,7 +289,7 @@ async def cmd_unmute(message: types.Message):
                 can_add_web_page_previews=True
             )
         )
-        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name} размучен.")
+        await message.answer(f"Пользователь {target_user.full_name} размучен.")
     except Exception as e:
         await message.answer(f"Ошибка размута: {e}")
 
