@@ -12,7 +12,7 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Используем список для правил, чтобы их можно было динамически дополнять
+# Список правил группы
 group_rules_list = [
     "Спам запрещен",
     "Порнография 18+ запрещена, но сливать порно наших врагов можно",
@@ -57,7 +57,6 @@ async def cmd_rules(message: types.Message):
 # Команда добавления нового правила
 @dp.message(Command("addrule"))
 async def cmd_add_rule(message: types.Message):
-    # Убираем саму команду "/addrule", чтобы остался только текст правила
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.reply("Напиши правило после команды, например:\n`/addrule Не флудить капсом`", parse_mode="Markdown")
@@ -117,14 +116,12 @@ async def cmd_mute(message: types.Message):
         await message.answer(f"Ошибка мута: {e}")
 
 
-# Новая команда: Размут
 @dp.message(Command("unmute"))
 async def cmd_unmute(message: types.Message):
     if not message.reply_to_message:
         await message.reply("Используйте в ответ на сообщение пользователя!")
         return
     try:
-        # Возвращаем стандартные права на отправку сообщений
         await message.chat.restrict(
             user_id=message.reply_to_message.from_user.id,
             permissions=ChatPermissions(
@@ -139,7 +136,7 @@ async def cmd_unmute(message: types.Message):
                 can_add_web_page_previews=True
             )
         )
-        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name ам} размучен.")
+        await message.answer(f"Пользователь {message.reply_to_message.from_user.full_name} размучен.")
     except Exception as e:
         await message.answer(f"Ошибка размута: {e}")
 
