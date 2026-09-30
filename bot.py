@@ -12,20 +12,6 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Список правил группы
-group_rules_list = [
-    "Спам запрещен",
-    "Порнография 18+ запрещена, но сливать порно наших врагов можно",
-    "Ссылки на чат запрещено",
-    "Слив владельца (Topyak) запрещено"
-]
-
-def get_rules_text():
-    text = "Правила группы:\n"
-    for i, rule in enumerate(group_rules_list, 1):
-        text += f"{i}. {rule}\n"
-    return text.strip()
-
 
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
@@ -33,7 +19,7 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
         BotCommand(command="mute", description="Замутить пользователя (в ответ)"),
         BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
-        BotCommand(command="rules", description="Показать правила группы"),
+        BotCommand(command="rules", description="Показать правила из описания"),
     ]
     await bot.set_my_commands(main_menu_commands)
 
@@ -49,71 +35,39 @@ async def is_owner(message: types.Message) -> bool:
         return False
 
 
-# Приветствие новых участников
+# Приветствие новых участников с правилами из описания группы
 @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def welcome_user(event: types.ChatMemberUpdated):
     user = event.new_chat_member.user
-    await event.chat.send_message(
-        f"Привет, {user.full_name}!\n\n{get_rules_text()}"
-    )
+    try:
+        chat_info = await bot.get_chat(event.chat.id)
+        rules_text = chat_info.description if chat_info.description else "Описание группы пока не заполнено."
+        await event.chat.send_message(
+            f"Привет, {user.full_name}!\n\n📋 **Правила группы:**\n{rules_text}",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await event.chat.send_message(f"Привет, {user.full_name}!")
 
 
-# ПРАВИЛА
+# ПРАВИЛА (берется прямо из описания группы)
 @dp.message(F.text.lower().in_(["/rules", "правила", "каталог правил"]))
 async def text_rules(message: types.Message):
-    await message.answer(get_rules_text())
-
-
-# ДОБАВИТЬ ПРАВИЛО
-@dp.message(F.text.lower().startswith(("/addrule", "добавить правило")))
-async def text_add_rule(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта функция доступна только владельцу группы!")
+    if message.chat.type == "private":
+        await message.answer("ℹ️ Эту команду лучше использовать в самой группе, чтобы увидеть её описание!")
         return
-
-    text_lower = message.text.lower()
-    if text_lower.startswith("/addrule"):
-        args = message.text.split(maxsplit=1)
-    else:
-        args = message.text.split(maxsplit=2)
-        args = [args[0], args[2]] if len(args) > 2 else [args[0]]
-
-    if len(args) < 2:
-        await message.reply("Напиши само правило после команды, например:\n`добавить правило Не флудить капсом`", parse_mode="Markdown")
-        return
-    
-    new_rule = args[1]
-    group_rules_list.append(new_rule)
-    await message.answer(f"✅ Правило добавлено владельцем!\n\n{get_rules_text()}")
+        
+    try:
+        chat_info = await bot.get_chat(message.chat.id)
+        if chat_info.description:
+            await message.answer(f"📋 **Правила группы:**\n\n{chat_info.description}", parse_mode="Markdown")
+        else:
+            await message.answer("⚠️ У этой группы еще не установлено описание с правилами!")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось получить описание группы: {e}")
 
 
-# УДАЛИТЬ ПРАВИЛО
-@dp.message(F.text.lower().startswith(("/delrule", "удалить правило")))
-async def text_del_rule(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта функция доступна только владельцу группы!")
-        return
-
-    words = message.text.split()
-    number_str = None
-    for word in words:
-        if word.isdigit():
-            number_str = word
-            break
-
-    if not number_str:
-        await message.reply("Укажи номер правила для удаления, например:\n`удалить правило 2`", parse_mode="Markdown")
-        return
-
-    index = int(number_str) - 1
-    if 0 <= index < len(group_rules_list):
-        removed = group_rules_list.pop(index)
-        await message.answer(f"🗑 Правило «{removed}» удалено!\n\n{get_rules_text()}")
-    else:
-        await message.reply("❌ Нет правила с таким номером! Проверь список через `правила`.")
-
-
-# БАН (строго через реплай)
+# БАН (строго через реплай с поддержкой времени)
 @dp.message(F.text.lower().startswith(("/ban", "бан")))
 async def text_ban(message: types.Message):
     if not await is_owner(message):
@@ -162,7 +116,7 @@ async def text_ban(message: types.Message):
         await message.answer(f"Ошибка бана: {e}")
 
 
-# РАЗБАН (строго через реплай)
+# РАЗБАН
 @dp.message(F.text.lower().startswith(("/unban", "разбан")))
 async def text_unban(message: types.Message):
     if not await is_owner(message):
@@ -181,7 +135,7 @@ async def text_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# МУТ (строго через реплай)
+# МУТ
 @dp.message(F.text.lower().startswith(("/mute", "мут")))
 async def text_mute(message: types.Message):
     if not await is_owner(message):
@@ -230,7 +184,7 @@ async def text_mute(message: types.Message):
         await message.answer(f"Ошибка мута: {e}")
 
 
-# РАЗМУТ (строго через реплай)
+# РАЗМУТ
 @dp.message(F.text.lower().startswith(("/unmute", "размут")))
 async def text_unmute(message: types.Message):
     if not await is_owner(message):
@@ -269,4 +223,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+        
