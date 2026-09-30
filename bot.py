@@ -7,7 +7,7 @@ from aiogram.types import BotCommand, ChatPermissions
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN = "8726690670:AAGeO4bC1Ncpclb_X8R_XCNaG8nTgkC2-SU"
+TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -15,11 +15,11 @@ dp = Dispatcher()
 warnings = {}
 
 GROUP_RULES = (
-    "Привет! Добро пожаловать в группу.\n"
-    "Вот основные правила:\n"
-    "1. Не оскорбляйте участников.\n"
-    "2. Не спамьте.\n"
-    "3. Соблюдайте уважение."
+    "Правила группы:
+• Спам запрещен
+• Порнография 18+ запрещена, но сливать порно наших врагов можно
+• Ссылки на чат запрещено
+• Слив владельца (Topyak) запрещено"
 )
 
 
