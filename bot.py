@@ -23,7 +23,7 @@ group_rules_list = [
 def get_rules_text():
     text = "Правила группы:\n"
     for i, rule in enumerate(group_rules_list, 1):
-        text += f"• {rule}\n"
+        text += f"{i}. {rule}\n"
     return text.strip()
 
 
@@ -33,11 +33,23 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
         BotCommand(command="mute", description="Замутить на 5 минут (в ответ)"),
         BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
-        BotCommand(command="warn", description="Выдать предупреждение (в ответ)"),
         BotCommand(command="rules", description="Показать правила группы"),
-        BotCommand(command="addrule", description="Добавить правило (написать текст после команды)"),
+        BotCommand(command="addrule", description="Добавить правило (только владелец)"),
+        BotCommand(command="delrule", description="Удалить правило по номеру (только владелец)"),
     ]
     await bot.set_my_commands(main_menu_commands)
+
+
+# Функция проверки, является ли пользователь создателем (владельцем) чата
+async def is_owner(message: types.Message) -> bool:
+    # В личных сообщениях с ботом считаем пользователя владельцем для удобства тестов
+    if message.chat.type == "private":
+        return True
+    try:
+        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        return member.status == "creator"
+    except Exception:
+        return False
 
 
 # Приветствие новых участников
@@ -54,9 +66,13 @@ async def cmd_rules(message: types.Message):
     await message.answer(get_rules_text())
 
 
-# Команда добавления нового правила
+# Добавление правила (только для владельца)
 @dp.message(Command("addrule"))
 async def cmd_add_rule(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
+
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.reply("Напиши правило после команды, например:\n`/addrule Не флудить капсом`", parse_mode="Markdown")
@@ -64,11 +80,34 @@ async def cmd_add_rule(message: types.Message):
     
     new_rule = args[1]
     group_rules_list.append(new_rule)
-    await message.answer(f"✅ Новое правило успешно добавлено!\n\n{get_rules_text()}")
+    await message.answer(f"✅ Правило добавлено владельцем!\n\n{get_rules_text()}")
+
+
+# Удаление правила по номеру (только для владельца)
+@dp.message(Command("delrule"))
+async def cmd_del_rule(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].isdigit():
+        await message.reply("Укажи номер правила для удаления, например:\n`/delrule 2`\n\nПосмотреть номера можно через /rules", parse_mode="Markdown")
+        return
+
+    index = int(args[1]) - 1
+    if 0 <= index < len(group_rules_list):
+        removed = group_rules_list.pop(index)
+        await message.answer(f"🗑 Правило «{removed}» удалено!\n\n{get_rules_text()}")
+    else:
+        await message.reply("❌ Нет правила с таким номером! Проверь список через `/rules`.")
 
 
 @dp.message(Command("ban"))
 async def cmd_ban(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
     if not message.reply_to_message:
         await message.reply("Эту команду нужно использовать в ответ на сообщение нарушителя!")
         return
@@ -77,7 +116,7 @@ async def cmd_ban(message: types.Message):
             chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id
         )
         await message.answer(
-            f"Пользователь {message.reply_to_message.from_user.full_name} забанен."
+            f"Пользователь {message.reply_to_message.from_user.full_name} забанен владельцем."
         )
     except Exception as e:
         await message.answer(f"Ошибка бана: {e}")
@@ -85,6 +124,9 @@ async def cmd_ban(message: types.Message):
 
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
     if not message.reply_to_message:
         await message.reply("Используйте в ответ на сообщение пользователя!")
         return
@@ -101,6 +143,9 @@ async def cmd_unban(message: types.Message):
 
 @dp.message(Command("mute"))
 async def cmd_mute(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
     if not message.reply_to_message:
         await message.reply("Используйте в ответ на сообщение пользователя!")
         return
@@ -118,6 +163,9 @@ async def cmd_mute(message: types.Message):
 
 @dp.message(Command("unmute"))
 async def cmd_unmute(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+        return
     if not message.reply_to_message:
         await message.reply("Используйте в ответ на сообщение пользователя!")
         return
