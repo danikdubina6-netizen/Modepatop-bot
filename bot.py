@@ -29,10 +29,10 @@ def get_rules_text():
 
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
-        BotCommand(command="ban", description="Забанить пользователя"),
-        BotCommand(command="unban", description="Разбанить пользователя"),
-        BotCommand(command="mute", description="Замутить пользователя"),
-        BotCommand(command="unmute", description="Размутить пользователя"),
+        BotCommand(command="ban", description="Забанить пользователя (в ответ)"),
+        BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
+        BotCommand(command="mute", description="Замутить пользователя (в ответ)"),
+        BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
         BotCommand(command="rules", description="Показать правила группы"),
     ]
     await bot.set_my_commands(main_menu_commands)
@@ -47,39 +47,6 @@ async def is_owner(message: types.Message) -> bool:
         return member.status == "creator"
     except Exception:
         return False
-
-
-# Улучшенный поиск цели (Реплай > Системное упоминание > Текстовый юзернейм)
-async def get_target_user(message: types.Message):
-    # 1. Если это ответ на сообщение (реплай)
-    if message.reply_to_message:
-        return message.reply_to_message.from_user
-    
-    # 2. Ищем через сущности (если Telegram распознал кликабельное упоминание)
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == "text_mention":
-                return entity.user
-            elif entity.type == "mention":
-                username = message.text[entity.offset:entity.offset + entity.length].lstrip("@")
-                try:
-                    chat_member = await bot.get_chat_member(message.chat.id, username)
-                    return chat_member.user
-                except Exception:
-                    pass
-
-    # 3. Ищем просто слово с собачкой `@` в тексте сообщения
-    args = message.text.split()
-    for arg in args:
-        if arg.startswith("@"):
-            username = arg.lstrip("@")
-            try:
-                chat_member = await bot.get_chat_member(message.chat.id, username)
-                return chat_member.user
-            except Exception:
-                pass
-                
-    return None
 
 
 # Приветствие новых участников
@@ -146,18 +113,18 @@ async def text_del_rule(message: types.Message):
         await message.reply("❌ Нет правила с таким номером! Проверь список через `правила`.")
 
 
-# БАН
+# БАН (строго через реплай)
 @dp.message(F.text.lower().startswith(("/ban", "бан")))
 async def text_ban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
 
-    target_user = await get_target_user(message)
-    if not target_user:
-        await message.reply("❌ Не удалось найти пользователя! Сделай реплай на его сообщение или укажи юзернейм (например: `бан @username 1 час`)", parse_mode="Markdown")
+    if not message.reply_to_message:
+        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя (например: `бан 1 час`)!", parse_mode="Markdown")
         return
 
+    target_user = message.reply_to_message.from_user
     args = message.text.split()
     until_date = None
     time_text = "навсегда"
@@ -195,18 +162,18 @@ async def text_ban(message: types.Message):
         await message.answer(f"Ошибка бана: {e}")
 
 
-# РАЗБАН
+# РАЗБАН (строго через реплай)
 @dp.message(F.text.lower().startswith(("/unban", "разбан")))
 async def text_unban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
     
-    target_user = await get_target_user(message)
-    if not target_user:
-        await message.reply("❌ Укажи пользователя через реплай или ник (`разбан @username`)!")
+    if not message.reply_to_message:
+        await message.reply("❌ Используй команду в ответ на сообщение пользователя (`разбан`)!")
         return
     
+    target_user = message.reply_to_message.from_user
     try:
         await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
         await message.answer(f"Пользователь {target_user.full_name} разбанен.")
@@ -214,18 +181,18 @@ async def text_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# МУТ
+# МУТ (строго через реплай)
 @dp.message(F.text.lower().startswith(("/mute", "мут")))
 async def text_mute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
 
-    target_user = await get_target_user(message)
-    if not target_user:
-        await message.reply("❌ Не найден пользователь! Сделай реплай или напиши `мут @username 1 час`", parse_mode="Markdown")
+    if not message.reply_to_message:
+        await message.reply("❌ Используй эту команду **в ответ на сообщение** (например: `мут` или `мут 30 минут`)!", parse_mode="Markdown")
         return
     
+    target_user = message.reply_to_message.from_user
     args = message.text.split()
     until_date = None
     time_text = "навсегда"
@@ -263,18 +230,18 @@ async def text_mute(message: types.Message):
         await message.answer(f"Ошибка мута: {e}")
 
 
-# РАЗМУТ
+# РАЗМУТ (строго через реплай)
 @dp.message(F.text.lower().startswith(("/unmute", "размут")))
 async def text_unmute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
 
-    target_user = await get_target_user(message)
-    if not target_user:
-        await message.reply("❌ Укажи пользователя через реплай или ник (`размут @username`)!")
+    if not message.reply_to_message:
+        await message.reply("❌ Используй команду в ответ на сообщение пользователя (`размут`)!")
         return
 
+    target_user = message.reply_to_message.from_user
     try:
         await message.chat.restrict(
             user_id=target_user.id,
@@ -302,4 +269,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+            
