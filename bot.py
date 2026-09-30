@@ -50,8 +50,8 @@ async def welcome_user(event: types.ChatMemberUpdated):
         await event.chat.send_message(f"Привет, {user.full_name}!")
 
 
-# ПРАВИЛА (берется прямо из описания группы)
-@dp.message(F.text.lower().in_(["/rules", "правила", "каталог правил"]))
+# ПРАВИЛА (из описания группы)
+@dp.message(F.text.lower().regexp(r"^(/rules(@\w+)?|правила|каталог правил)"))
 async def text_rules(message: types.Message):
     if message.chat.type == "private":
         await message.answer("ℹ️ Эту команду лучше использовать в самой группе, чтобы увидеть её описание!")
@@ -62,20 +62,20 @@ async def text_rules(message: types.Message):
         if chat_info.description:
             await message.answer(f"📋 **Правила группы:**\n\n{chat_info.description}", parse_mode="Markdown")
         else:
-            await message.answer("⚠️ У этой группы еще не установлено описание с правилами!")
+            await message.answer("⚠️️ У этой группы еще не установлено описание с правилами!")
     except Exception as e:
-        await message.answer(f"❌ Не удалось получить описание группы: {e}")
+        await message.answer(f"❌ Не удалось получить описание группы (убедитесь, что бот — администратор): {e}")
 
 
-# БАН (строго через реплай с поддержкой времени)
-@dp.message(F.text.lower().startswith(("/ban", "бан")))
+# БАН (если время не указано — банит НАВСЕГДА)
+@dp.message(F.text.lower().regexp(r"^(/ban(@\w+)?|бан)"))
 async def text_ban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя (например: `бан 1 час`)!", parse_mode="Markdown")
+        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя!", parse_mode="Markdown")
         return
 
     target_user = message.reply_to_message.from_user
@@ -117,7 +117,7 @@ async def text_ban(message: types.Message):
 
 
 # РАЗБАН
-@dp.message(F.text.lower().startswith(("/unban", "разбан")))
+@dp.message(F.text.lower().regexp(r"^(/unban(@\w+)?|разбан)"))
 async def text_unban(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
@@ -135,15 +135,15 @@ async def text_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# МУТ
-@dp.message(F.text.lower().startswith(("/mute", "мут")))
+# МУТ (если время не указано — мутит НАВСЕГДА)
+@dp.message(F.text.lower().regexp(r"^(/mute(@\w+)?|мут)"))
 async def text_mute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Используй эту команду **в ответ на сообщение** (например: `мут` или `мут 30 минут`)!", parse_mode="Markdown")
+        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя!", parse_mode="Markdown")
         return
     
     target_user = message.reply_to_message.from_user
@@ -185,7 +185,7 @@ async def text_mute(message: types.Message):
 
 
 # РАЗМУТ
-@dp.message(F.text.lower().startswith(("/unmute", "размут")))
+@dp.message(F.text.lower().regexp(r"^(/unmute(@\w+)?|размут)"))
 async def text_unmute(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта команда доступна только владельцу группы!")
