@@ -38,7 +38,7 @@ async def set_main_menu(bot: Bot):
     await bot.set_my_commands(main_menu_commands)
 
 
-# Функция проверки, является ли пользователь создателем (владельцем) чата
+# Проверка, является ли пользователь владельцем чата
 async def is_owner(message: types.Message) -> bool:
     if message.chat.type == "private":
         return True
@@ -49,32 +49,36 @@ async def is_owner(message: types.Message) -> bool:
         return False
 
 
-# Функция поиска пользователя (из реплая или по тексту/упоминанию)
+# Улучшенный поиск цели (Реплай > Системное упоминание > Текстовый юзернейм)
 async def get_target_user(message: types.Message):
-    # 1. Если есть реплай на сообщение
+    # 1. Если это ответ на сообщение (реплай)
     if message.reply_to_message:
         return message.reply_to_message.from_user
     
-    # 2. Если есть упоминание через @username или сущности в тексте
+    # 2. Ищем через сущности (если Telegram распознал кликабельное упоминание)
     if message.entities:
         for entity in message.entities:
             if entity.type == "text_mention":
                 return entity.user
             elif entity.type == "mention":
-                # Достаем текст упоминания, например "@username"
-                username = message.text[entity.offset:entity.offset + entity.length]
-                # Попробуем найти через поиск (если бот видел пользователя) или через текст
-                # В aiogram проще всего распарсить через аргументы, если указан юзернейм
-                pass
-                
-    # 3. Попробуем найти по первому слову с собачкой `@` в тексте
+                username = message.text[entity.offset:entity.offset + entity.length].lstrip("@")
+                try:
+                    chat_member = await bot.get_chat_member(message.chat.id, username)
+                    return chat_member.user
+                except Exception:
+                    pass
+
+    # 3. Ищем просто слово с собачкой `@` в тексте сообщения
     args = message.text.split()
     for arg in args:
         if arg.startswith("@"):
-            username_clean = arg.lstrip("@")
-            # Перебираем недавние сообщения или оставляем как текстовый поиск, 
-            # но в Telegram API без базы данных по юзернейму напрямую забанить нельзя — нужен user_id.
-            # Поэтому надежнее всего реплай или упоминание.
+            username = arg.lstrip("@")
+            try:
+                chat_member = await bot.get_chat_member(message.chat.id, username)
+                return chat_member.user
+            except Exception:
+                pass
+                
     return None
 
 
@@ -87,13 +91,13 @@ async def welcome_user(event: types.ChatMemberUpdated):
     )
 
 
-# Обработка команд и текста: ПРАВИЛА (/rules или просто "правила")
+# ПРАВИЛА
 @dp.message(F.text.lower().in_(["/rules", "правила", "каталог правил"]))
 async def text_rules(message: types.Message):
     await message.answer(get_rules_text())
 
 
-# Добавление правила: /addrule или "добавить правило ТЕКСТ"
+# ДОБАВИТЬ ПРАВИЛО
 @dp.message(F.text.lower().startswith(("/addrule", "добавить правило")))
 async def text_add_rule(message: types.Message):
     if not await is_owner(message):
@@ -104,7 +108,7 @@ async def text_add_rule(message: types.Message):
     if text_lower.startswith("/addrule"):
         args = message.text.split(maxsplit=1)
     else:
-        args = message.text.split(maxsplit=2) # на случай "добавить правило ТЕКСТ"
+        args = message.text.split(maxsplit=2)
         args = [args[0], args[2]] if len(args) > 2 else [args[0]]
 
     if len(args) < 2:
@@ -116,14 +120,13 @@ async def text_add_rule(message: types.Message):
     await message.answer(f"✅ Правило добавлено владельцем!\n\n{get_rules_text()}")
 
 
-# Удаление правила: /delrule или "удалить правило НОМЕР"
+# УДАЛИТЬ ПРАВИЛО
 @dp.message(F.text.lower().startswith(("/delrule", "удалить правило")))
 async def text_del_rule(message: types.Message):
     if not await is_owner(message):
         await message.reply("⛔ Эта функция доступна только владельцу группы!")
         return
 
-    # Достаем цифру из текста
     words = message.text.split()
     number_str = None
     for word in words:
@@ -132,7 +135,7 @@ async def text_del_rule(message: types.Message):
             break
 
     if not number_str:
-        await message.reply("Укажи номер правила для удаления, например:\n`удалить правило 2`\n\nПосмотреть номера можно через `правила`", parse_mode="Markdown")
+        await message.reply("Укажи номер правила для удаления, например:\n`удалить правило 2`", parse_mode="Markdown")
         return
 
     index = int(number_str) - 1
@@ -143,7 +146,7 @@ async def text_del_rule(message: types.Message):
         await message.reply("❌ Нет правила с таким номером! Проверь список через `правила`.")
 
 
-# БАН (через /ban или слово "бан" с поддержкой времени и упоминания/реплая)
+# БАН
 @dp.message(F.text.lower().startswith(("/ban", "бан")))
 async def text_ban(message: types.Message):
     if not await is_owner(message):
@@ -152,17 +155,15 @@ async def text_ban(message: types.Message):
 
     target_user = await get_target_user(message)
     if not target_user:
-        await message.reply("Используй команду **в ответ на сообщение** нарушителя или **упомяни его** (например: `бан @user 1 час`)!", parse_mode="Markdown")
+        await message.reply("❌ Не удалось найти пользователя! Сделай реплай на его сообщение или укажи юзернейм (например: `бан @username 1 час`)", parse_mode="Markdown")
         return
 
     args = message.text.split()
     until_date = None
     time_text = "навсегда"
 
-    # Ищем число и единицу измерения времени в тексте
     if len(args) >= 2:
         try:
-            # Пробуем найти число среди аргументов
             for i, arg in enumerate(args):
                 if arg.isdigit():
                     amount = int(arg)
@@ -194,7 +195,7 @@ async def text_ban(message: types.Message):
         await message.answer(f"Ошибка бана: {e}")
 
 
-# РАЗБАН (/unban или "разбан")
+# РАЗБАН
 @dp.message(F.text.lower().startswith(("/unban", "разбан")))
 async def text_unban(message: types.Message):
     if not await is_owner(message):
@@ -203,7 +204,7 @@ async def text_unban(message: types.Message):
     
     target_user = await get_target_user(message)
     if not target_user:
-        await message.reply("Используй в ответ на сообщение пользователя или упомяни его (`разбан @user`)!")
+        await message.reply("❌ Укажи пользователя через реплай или ник (`разбан @username`)!")
         return
     
     try:
@@ -213,7 +214,7 @@ async def text_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# МУТ (/mute или "мут" с поддержкой времени и упоминания/реплая)
+# МУТ
 @dp.message(F.text.lower().startswith(("/mute", "мут")))
 async def text_mute(message: types.Message):
     if not await is_owner(message):
@@ -222,11 +223,11 @@ async def text_mute(message: types.Message):
 
     target_user = await get_target_user(message)
     if not target_user:
-        await message.reply("Используй команду **в ответ на сообщение** или **упомяни пользователя** (например: `мут @user 1 час`)!", parse_mode="Markdown")
+        await message.reply("❌ Не найден пользователь! Сделай реплай или напиши `мут @username 1 час`", parse_mode="Markdown")
         return
     
     args = message.text.split()
-    until_date = None  # None = навсегда
+    until_date = None
     time_text = "навсегда"
 
     if len(args) >= 2:
@@ -262,7 +263,7 @@ async def text_mute(message: types.Message):
         await message.answer(f"Ошибка мута: {e}")
 
 
-# РАЗМУТ (/unmute или "размут")
+# РАЗМУТ
 @dp.message(F.text.lower().startswith(("/unmute", "размут")))
 async def text_unmute(message: types.Message):
     if not await is_owner(message):
@@ -271,7 +272,7 @@ async def text_unmute(message: types.Message):
 
     target_user = await get_target_user(message)
     if not target_user:
-        await message.reply("Используй в ответ на сообщение пользователя или упомяни его (`размут @user`)!")
+        await message.reply("❌ Укажи пользователя через реплай или ник (`размут @username`)!")
         return
 
     try:
