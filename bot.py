@@ -12,7 +12,7 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Словарь для хранения модераторов в формате {user_id: "Имя пользователя"}
+# Словарь для модераторов по чатам: {chat_id: {user_id: "Имя"}}
 group_moderators = {}
 
 
@@ -41,16 +41,17 @@ async def is_owner(message: types.Message) -> bool:
         return False
 
 
-# Проверка: владелец или назначенный модератор
+# Проверка: владелец или модератор именно в ЭТОМ чате
 async def can_manage(message: types.Message) -> bool:
     if await is_owner(message):
         return True
-    if message.from_user.id in group_moderators:
+    chat_mods = group_moderators.get(message.chat.id, {})
+    if message.from_user.id in chat_mods:
         return True
     return False
 
 
-# ДОБАВИТЬ МОДЕРАТОРА
+# ДОБАВИТЬ МОДЕРАТОРА (для текущего чата)
 @dp.message(F.text.lower().regexp(r"^(/addmod(@\w+)?|добавить модератора)"))
 async def add_moderator(message: types.Message):
     if not await is_owner(message):
@@ -62,11 +63,16 @@ async def add_moderator(message: types.Message):
         return
 
     target_user = message.reply_to_message.from_user
-    group_moderators[target_user.id] = target_user.full_name
-    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором!")
+    chat_id = message.chat.id
+
+    if chat_id not in group_moderators:
+        group_moderators[chat_id] = {}
+
+    group_moderators[chat_id][target_user.id] = target_user.full_name
+    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором этого чата!")
 
 
-# УБРАТЬ МОДЕРАТОРА
+# УБРАТЬ МОДЕРАТОРА (из текущего чата)
 @dp.message(F.text.lower().regexp(r"^(/delmod(@\w+)?|убрать модератора)"))
 async def remove_moderator(message: types.Message):
     if not await is_owner(message):
@@ -78,22 +84,28 @@ async def remove_moderator(message: types.Message):
         return
 
     target_user = message.reply_to_message.from_user
-    if target_user.id in group_moderators:
-        del group_moderators[target_user.id]
-        await message.answer(f"🗑 Пользователь {target_user.full_name} больше не модератор.")
+    chat_id = message.chat.id
+
+    chat_mods = group_moderators.get(chat_id, {})
+    if target_user.id in chat_mods:
+        del chat_mods[target_user.id]
+        await message.answer(f"🗑 Пользователь {target_user.full_name} больше не модератор этого чата.")
     else:
-        await message.answer(f"⚠️ Пользователь {target_user.full_name} не числился в модераторах.")
+        await message.answer(f"⚠️ Пользователь {target_user.full_name} не числился в модераторах этого чата.")
 
 
-# СПИСОК АДМИНИСТРАТОРОВ / МОДЕРАТОРОВ БОТА
+# СПИСОК МОДЕРАТОРОВ ИМЕННО ЭТОГО ЧАТА
 @dp.message(F.text.lower().regexp(r"^(/mods(@\w+)?|список администраторов|модераторы|админы)"))
 async def list_moderators(message: types.Message):
-    if not group_moderators:
-        await message.answer("ℹ️ У этого бота пока нет назначенных модераторов.")
+    chat_id = message.chat.id
+    chat_mods = group_moderators.get(chat_id, {})
+
+    if not chat_mods:
+        await message.answer("ℹ️ У этого бота пока нет назначенных модераторов в данном чате.")
         return
     
-    text = "🛡 **Список модераторов бота:**\n\n"
-    for idx, (uid, name) in enumerate(group_moderators.items(), 1):
+    text = "🛡 **Список модераторов этого чата:**\n\n"
+    for idx, (uid, name) in enumerate(chat_mods.items(), 1):
         text += f"{idx}. {name} (ID: `{uid}`)\n"
         
     await message.answer(text, parse_mode="Markdown")
@@ -287,4 +299,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+                    
