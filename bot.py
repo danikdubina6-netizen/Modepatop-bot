@@ -12,6 +12,9 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Словарь для хранения модераторов в формате {user_id: "Имя пользователя"}
+group_moderators = {}
+
 
 async def set_main_menu(bot: Bot):
     main_menu_commands = [
@@ -20,6 +23,9 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="mute", description="Замутить пользователя (в ответ)"),
         BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
         BotCommand(command="rules", description="Показать правила из описания"),
+        BotCommand(command="addmod", description="Добавить модератора (в ответ)"),
+        BotCommand(command="delmod", description="Убрать модератора (в ответ)"),
+        BotCommand(command="mods", description="Список модераторов бота"),
     ]
     await bot.set_my_commands(main_menu_commands)
 
@@ -33,6 +39,64 @@ async def is_owner(message: types.Message) -> bool:
         return member.status == "creator"
     except Exception:
         return False
+
+
+# Проверка: владелец или назначенный модератор
+async def can_manage(message: types.Message) -> bool:
+    if await is_owner(message):
+        return True
+    if message.from_user.id in group_moderators:
+        return True
+    return False
+
+
+# ДОБАВИТЬ МОДЕРАТОРА
+@dp.message(F.text.lower().regexp(r"^(/addmod(@\w+)?|добавить модератора)"))
+async def add_moderator(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Только владелец группы может назначать модераторов!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("❌ Сделай реплай на сообщение пользователя, которого хочешь сделать модератором!", parse_mode="Markdown")
+        return
+
+    target_user = message.reply_to_message.from_user
+    group_moderators[target_user.id] = target_user.full_name
+    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором!")
+
+
+# УБРАТЬ МОДЕРАТОРА
+@dp.message(F.text.lower().regexp(r"^(/delmod(@\w+)?|убрать модератора)"))
+async def remove_moderator(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("⛔ Только владелец группы может снимать модераторов!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("❌ Сделай реплай на сообщение модератора, которого хочешь разжаловать!", parse_mode="Markdown")
+        return
+
+    target_user = message.reply_to_message.from_user
+    if target_user.id in group_moderators:
+        del group_moderators[target_user.id]
+        await message.answer(f"🗑 Пользователь {target_user.full_name} больше не модератор.")
+    else:
+        await message.answer(f"⚠️ Пользователь {target_user.full_name} не числился в модераторах.")
+
+
+# СПИСОК АДМИНИСТРАТОРОВ / МОДЕРАТОРОВ БОТА
+@dp.message(F.text.lower().regexp(r"^(/mods(@\w+)?|список администраторов|модераторы|админы)"))
+async def list_moderators(message: types.Message):
+    if not group_moderators:
+        await message.answer("ℹ️ У этого бота пока нет назначенных модераторов.")
+        return
+    
+    text = "🛡 **Список модераторов бота:**\n\n"
+    for idx, (uid, name) in enumerate(group_moderators.items(), 1):
+        text += f"{idx}. {name} (ID: `{uid}`)\n"
+        
+    await message.answer(text, parse_mode="Markdown")
 
 
 # Приветствие новых участников с правилами из описания группы
@@ -62,16 +126,16 @@ async def text_rules(message: types.Message):
         if chat_info.description:
             await message.answer(f"📋 **Правила группы:**\n\n{chat_info.description}", parse_mode="Markdown")
         else:
-            await message.answer("⚠️️ У этой группы еще не установлено описание с правилами!")
+            await message.answer("⚠️ У этой группы еще не установлено описание с правилами!")
     except Exception as e:
-        await message.answer(f"❌ Не удалось получить описание группы (убедитесь, что бот — администратор): {e}")
+        await message.answer(f"❌ Не удалось получить описание группы: {e}")
 
 
-# БАН (если время не указано — банит НАВСЕГДА)
+# БАН
 @dp.message(F.text.lower().regexp(r"^(/ban(@\w+)?|бан)"))
 async def text_ban(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+    if not await can_manage(message):
+        await message.reply("⛔ У тебя нет прав на использование этой команды!")
         return
 
     if not message.reply_to_message:
@@ -111,7 +175,7 @@ async def text_ban(message: types.Message):
         else:
             await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
             
-        await message.answer(f"Пользователь {target_user.full_name} забанен владельцем {time_text}.")
+        await message.answer(f"Пользователь {target_user.full_name} забанен {time_text}.")
     except Exception as e:
         await message.answer(f"Ошибка бана: {e}")
 
@@ -119,8 +183,8 @@ async def text_ban(message: types.Message):
 # РАЗБАН
 @dp.message(F.text.lower().regexp(r"^(/unban(@\w+)?|разбан)"))
 async def text_unban(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+    if not await can_manage(message):
+        await message.reply("⛔ У тебя нет прав на использование этой команды!")
         return
     
     if not message.reply_to_message:
@@ -135,11 +199,11 @@ async def text_unban(message: types.Message):
         await message.answer(f"Ошибка разбана: {e}")
 
 
-# МУТ (если время не указано — мутит НАВСЕГДА)
+# МУТ
 @dp.message(F.text.lower().regexp(r"^(/mute(@\w+)?|мут)"))
 async def text_mute(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+    if not await can_manage(message):
+        await message.reply("⛔ У тебя нет прав на использование этой команды!")
         return
 
     if not message.reply_to_message:
@@ -187,8 +251,8 @@ async def text_mute(message: types.Message):
 # РАЗМУТ
 @dp.message(F.text.lower().regexp(r"^(/unmute(@\w+)?|размут)"))
 async def text_unmute(message: types.Message):
-    if not await is_owner(message):
-        await message.reply("⛔ Эта команда доступна только владельцу группы!")
+    if not await can_manage(message):
+        await message.reply("⛔ У тебя нет прав на использование этой команды!")
         return
 
     if not message.reply_to_message:
