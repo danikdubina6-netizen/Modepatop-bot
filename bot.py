@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import logging
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
@@ -12,8 +14,30 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Словарь для модераторов по чатам: {chat_id: {user_id: "Имя"}}
-group_moderators = {}
+# Имя файла для сохранения модераторов
+MODS_FILE = "mods.json"
+
+# Загружаем модераторов из файла при старте
+def load_moderators():
+    if os.path.exists(MODS_FILE):
+        try:
+            with open(MODS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(chat_id): {int(uid): name for uid, name in mods.items()} for chat_id, mods in data.items()}
+        except Exception:
+            return {}
+    return {}
+
+# Сохраняем модераторов в файл
+def save_moderators():
+    try:
+        with open(MODS_FILE, "w", encoding="utf-8") as f:
+            json.dump(group_moderators, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения модераторов: {e}")
+
+# Инициализируем словарь при запуске
+group_moderators = load_moderators()
 
 
 async def set_main_menu(bot: Bot):
@@ -49,9 +73,7 @@ async def can_manage(message: types.Message) -> bool:
     if message.from_user.id in chat_mods:
         return True
     return False
-
-
-# ДОБАВИТЬ МОДЕРАТОРА (для текущего чата)
+    # ДОБАВИТЬ МОДЕРАТОРА (для текущего чата)
 @dp.message(F.text.lower().regexp(r"^(/addmod(@\w+)?|добавить модератора)"))
 async def add_moderator(message: types.Message):
     if not await is_owner(message):
@@ -69,6 +91,7 @@ async def add_moderator(message: types.Message):
         group_moderators[chat_id] = {}
 
     group_moderators[chat_id][target_user.id] = target_user.full_name
+    save_moderators()
     await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором этого чата!")
 
 
@@ -89,6 +112,7 @@ async def remove_moderator(message: types.Message):
     chat_mods = group_moderators.get(chat_id, {})
     if target_user.id in chat_mods:
         del chat_mods[target_user.id]
+        save_moderators()
         await message.answer(f"🗑 Пользователь {target_user.full_name} больше не модератор этого чата.")
     else:
         await message.answer(f"⚠️ Пользователь {target_user.full_name} не числился в модераторах этого чата.")
@@ -299,4 +323,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                    
+    
