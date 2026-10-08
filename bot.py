@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import logging
+import base64
+import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, ChatMemberUpdatedFilter, MEMBER
@@ -14,8 +16,13 @@ TOKEN = "8850468671:AAEJ31dG-_4JOmg3IOC9e_T3IdtVarLftnY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Имя файла для сохранения модераторов
 MODS_FILE = "mods.json"
+
+# НАСТРОЙКИ ДЛЯ GITHUB API (замени на свой ник и название репозитория)
+REPO_OWNER = "danikdubina6-netizen"
+REPO_NAME = "Topyak_bot2026" # Укажи точное имя своего репозитория
+GITHUB_TOKEN = os.getenv("GH_TOKEN")
+
 
 # Загружаем модераторов из файла при старте
 def load_moderators():
@@ -28,16 +35,58 @@ def load_moderators():
             return {}
     return {}
 
-# Сохраняем модераторов в файл
-def save_moderators():
+
+group_moderators = load_moderators()
+
+
+# Автоматический пуш файла mods.json на GitHub через API
+async def push_mods_to_github():
+    if not GITHUB_TOKEN:
+        logging.warning("GitHub токен не найден в переменных окружения, авто-коммит пропущен.")
+        return
+
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{MODS_FILE}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        sha = None
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                file_info = await resp.json()
+                sha = file_info.get("sha")
+
+        with open(MODS_FILE, "r", encoding="utf-8") as f:
+            content_str = f.read()
+        
+        content_encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+
+        payload = {
+            "message": "Auto-update mods.json via bot command",
+            "content": content_encoded,
+            "branch": "main" # Если у тебя основная ветка master, смени здесь
+        }
+        if sha:
+            payload["sha"] = sha
+
+        async with session.put(url, headers=headers, json=payload) as resp:
+            if resp.status in (200, 201):
+                logging.info("Файл mods.json успешно закоммичен на GitHub!")
+            else:
+                text = await resp.text()
+                logging.error(f"Не удалось запушить mods.json в GitHub: {text}")
+
+
+# Сохраняем локально и отправляем в репозиторий
+async def save_and_sync_moderators():
     try:
         with open(MODS_FILE, "w", encoding="utf-8") as f:
             json.dump(group_moderators, f, ensure_ascii=False, indent=4)
+        await push_mods_to_github()
     except Exception as e:
         logging.error(f"Ошибка сохранения модераторов: {e}")
-
-# Инициализируем словарь при запуске
-group_moderators = load_moderators()
 
 
 async def set_main_menu(bot: Bot):
@@ -54,7 +103,6 @@ async def set_main_menu(bot: Bot):
     await bot.set_my_commands(main_menu_commands)
 
 
-# Проверка, является ли пользователь владельцем чата
 async def is_owner(message: types.Message) -> bool:
     if message.chat.type == "private":
         return True
@@ -65,7 +113,6 @@ async def is_owner(message: types.Message) -> bool:
         return False
 
 
-# Проверка: владелец или модератор именно в ЭТОМ чате
 async def can_manage(message: types.Message) -> bool:
     if await is_owner(message):
         return True
@@ -73,7 +120,9 @@ async def can_manage(message: types.Message) -> bool:
     if message.from_user.id in chat_mods:
         return True
     return False
-    # ДОБАВИТЬ МОДЕРАТОРА (для текущего чата)
+
+
+# ДОБАВИТЬ МОДЕРАТОРА
 @dp.message(F.text.lower().regexp(r"^(/addmod(@\w+)?|добавить модератора)"))
 async def add_moderator(message: types.Message):
     if not await is_owner(message):
@@ -81,7 +130,7 @@ async def add_moderator(message: types.Message):
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай на сообщение пользователя, которого хочешь сделать модератором!", parse_mode="Markdown")
+        await message.reply("❌ Сделай реплай на сообщение пользователя!", parse_mode="Markdown")
         return
 
     target_user = message.reply_to_message.from_user
@@ -91,11 +140,11 @@ async def add_moderator(message: types.Message):
         group_moderators[chat_id] = {}
 
     group_moderators[chat_id][target_user.id] = target_user.full_name
-    save_moderators()
-    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором этого чата!")
+    await save_and_sync_moderators()
+    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором и сохранен в облаке!")
 
 
-# УБРАТЬ МОДЕРАТОРА (из текущего чата)
+# УБРАТЬ МОДЕРАТОРА
 @dp.message(F.text.lower().regexp(r"^(/delmod(@\w+)?|убрать модератора)"))
 async def remove_moderator(message: types.Message):
     if not await is_owner(message):
@@ -103,7 +152,7 @@ async def remove_moderator(message: types.Message):
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай на сообщение модератора, которого хочешь разжаловать!", parse_mode="Markdown")
+        await message.reply("❌ Сделай реплай на сообщение модератора!", parse_mode="Markdown")
         return
 
     target_user = message.reply_to_message.from_user
@@ -112,20 +161,20 @@ async def remove_moderator(message: types.Message):
     chat_mods = group_moderators.get(chat_id, {})
     if target_user.id in chat_mods:
         del chat_mods[target_user.id]
-        save_moderators()
-        await message.answer(f"🗑 Пользователь {target_user.full_name} больше не модератор этого чата.")
+        await save_and_sync_moderators()
+        await message.answer(f"🗑 Пользователь {target_user.full_name} снят с поста модератора.")
     else:
-        await message.answer(f"⚠️ Пользователь {target_user.full_name} не числился в модераторах этого чата.")
+        await message.answer(f"⚠️ Пользователь не найден в модераторах этого чата.")
 
 
-# СПИСОК МОДЕРАТОРОВ ИМЕННО ЭТОГО ЧАТА
+# СПИСОК МОДЕРАТОРОВ
 @dp.message(F.text.lower().regexp(r"^(/mods(@\w+)?|список администраторов|модераторы|админы)"))
 async def list_moderators(message: types.Message):
     chat_id = message.chat.id
     chat_mods = group_moderators.get(chat_id, {})
 
     if not chat_mods:
-        await message.answer("ℹ️ У этого бота пока нет назначенных модераторов в данном чате.")
+        await message.answer("ℹ️ У этого бота пока нет модераторов в данном чате.")
         return
     
     text = "🛡 **Список модераторов этого чата:**\n\n"
@@ -135,7 +184,7 @@ async def list_moderators(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-# Приветствие новых участников с правилами из описания группы
+# ПРИВЕТСТВИЕ
 @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def welcome_user(event: types.ChatMemberUpdated):
     user = event.new_chat_member.user
@@ -150,11 +199,11 @@ async def welcome_user(event: types.ChatMemberUpdated):
         await event.chat.send_message(f"Привет, {user.full_name}!")
 
 
-# ПРАВИЛА (из описания группы)
+# ПРАВИЛА
 @dp.message(F.text.lower().regexp(r"^(/rules(@\w+)?|правила|каталог правил)"))
 async def text_rules(message: types.Message):
     if message.chat.type == "private":
-        await message.answer("ℹ️ Эту команду лучше использовать в самой группе, чтобы увидеть её описание!")
+        await message.answer("ℹ️ Используй эту команду в группе!")
         return
         
     try:
@@ -162,20 +211,20 @@ async def text_rules(message: types.Message):
         if chat_info.description:
             await message.answer(f"📋 **Правила группы:**\n\n{chat_info.description}", parse_mode="Markdown")
         else:
-            await message.answer("⚠️ У этой группы еще не установлено описание с правилами!")
+            await message.answer("⚠️ У группы нет описания с правилами!")
     except Exception as e:
-        await message.answer(f"❌ Не удалось получить описание группы: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # БАН
 @dp.message(F.text.lower().regexp(r"^(/ban(@\w+)?|бан)"))
 async def text_ban(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ У тебя нет прав на использование этой команды!")
+        await message.reply("⛔ Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя!", parse_mode="Markdown")
+        await message.reply("❌ Сделай реплай на сообщение нарушителя!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -220,11 +269,11 @@ async def text_ban(message: types.Message):
 @dp.message(F.text.lower().regexp(r"^(/unban(@\w+)?|разбан)"))
 async def text_unban(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ У тебя нет прав на использование этой команды!")
+        await message.reply("⛔ Нет прав!")
         return
     
     if not message.reply_to_message:
-        await message.reply("❌ Используй команду в ответ на сообщение пользователя (`разбан`)!")
+        await message.reply("❌ Сделай реплай!")
         return
     
     target_user = message.reply_to_message.from_user
@@ -239,11 +288,11 @@ async def text_unban(message: types.Message):
 @dp.message(F.text.lower().regexp(r"^(/mute(@\w+)?|мут)"))
 async def text_mute(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ У тебя нет прав на использование этой команды!")
+        await message.reply("⛔ Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Используй эту команду **в ответ на сообщение** нарушителя!", parse_mode="Markdown")
+        await message.reply("❌ Сделай реплай!")
         return
     
     target_user = message.reply_to_message.from_user
@@ -288,11 +337,11 @@ async def text_mute(message: types.Message):
 @dp.message(F.text.lower().regexp(r"^(/unmute(@\w+)?|размут)"))
 async def text_unmute(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ У тебя нет прав на использование этой команды!")
+        await message.reply("⛔ Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Используй команду в ответ на сообщение пользователя (`размут`)!")
+        await message.reply("❌ Сделай реплай!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -323,4 +372,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
