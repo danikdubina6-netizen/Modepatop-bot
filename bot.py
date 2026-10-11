@@ -23,6 +23,9 @@ REPO_OWNER = "danikdubina6-netizen"
 REPO_NAME = "Topyak_bot2026"
 GITHUB_TOKEN = os.getenv("GH_TOKEN")
 
+# Словарь для отслеживания прошедших верификацию: {chat_id: {user_id: True}}
+verified_users = {}
+
 
 def load_data(filename):
     if os.path.exists(filename):
@@ -141,13 +144,14 @@ async def can_manage(message: types.Message) -> bool:
     if message.from_user.id in chat_mods:
         return True
     return False
-    # Команда /antispam с обучающей инструкцией и переключением режимов
+
+
+# Команда /antispam с обучающей инструкцией и переключением режимов
 @dp.message(F.text.lower().regexp(r"^(/antispam(@\w+)?|антиспам)"))
 async def toggle_antispam(message: types.Message):
     chat_id = message.chat.id
     args = message.text.split()
 
-    # Если аргументов нет — показываем обучающую инструкцию и текущий статус
     if len(args) < 2:
         current_status = antispam_settings.get(chat_id, True)
         status_text = "🟢 Включена" if current_status else "🔴 Выключена"
@@ -157,13 +161,12 @@ async def toggle_antispam(message: types.Message):
             f"Текущий статус в этом чате: {status_text}\n\n"
             f"📋 **Инструкция по настройке:**\n"
             f"• Защита проверяет новых участников с помощью кнопки и таймера на 3 минуты, защищая чат от ботов.\n"
-            f"• Чтобы **включить** защиту, отправьте:\n` /antispam on `\n"
-            f"• Чтобы **выключить** защиту (убрать проверки), отправьте:\n` /antispam off `"
+            f"• Чтобы **включить** защиту, отправьте:\n`/antispam on`\n"
+            f"• Чтобы **выключить** защиту (убрать проверки), отправьте:\n`/antispam off`"
         )
         await message.answer(help_text, parse_mode="Markdown")
         return
 
-    # Проверка прав для изменения настроек
     if not await can_manage(message):
         await message.reply("⛔ Только владелец или модераторы могут менять настройки защиты!")
         return
@@ -187,7 +190,6 @@ async def welcome_and_verify(event: types.ChatMemberUpdated):
     user = event.new_chat_member.user
     chat_id = event.chat.id
 
-    # Пропускаем настоящих телеграм-ботов или если защита выключена в чате
     if user.is_bot or not antispam_settings.get(chat_id, True):
         return
 
@@ -214,6 +216,9 @@ async def welcome_and_verify(event: types.ChatMemberUpdated):
     async def check_verification():
         await asyncio.sleep(180)
         try:
+            if chat_id in verified_users and user.id in verified_users[chat_id]:
+                return  # Проверка уже пройдена, не баним
+            
             member = await bot.get_chat_member(chat_id, user.id)
             if member.status in ("restricted", "member"):
                 await bot.ban_chat_member(chat_id, user.id)
@@ -225,7 +230,6 @@ async def welcome_and_verify(event: types.ChatMemberUpdated):
     asyncio.create_task(check_verification())
 
 
-# Обработка нажатия кнопки верификации (только сам пользователь)
 @dp.callback_query(F.data.startswith("verify_"))
 async def verify_callback(callback: types.CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
@@ -235,11 +239,16 @@ async def verify_callback(callback: types.CallbackQuery):
         return
 
     chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+
+    if chat_id not in verified_users:
+        verified_users[chat_id] = {}
+    verified_users[chat_id][user_id] = True
 
     try:
         await bot.restrict_chat_member(
             chat_id=chat_id,
-            user_id=callback.from_user.id,
+            user_id=user_id,
             permissions=ChatPermissions(
                 can_send_messages=True,
                 can_send_audios=True,
@@ -493,4 +502,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+                
