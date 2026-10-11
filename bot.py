@@ -6,8 +6,8 @@ import base64
 import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command, ChatMemberUpdatedFilter, MEMBER
-from aiogram.types import BotCommand, ChatPermissions
+from aiogram.filters import ChatMemberUpdatedFilter, MEMBER
+from aiogram.types import BotCommand, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,35 +17,47 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 MODS_FILE = "mods.json"
+SETTINGS_FILE = "settings.json"
 
-# НАСТРОЙКИ ДЛЯ GITHUB API (замени на свой ник и название репозитория)
 REPO_OWNER = "danikdubina6-netizen"
-REPO_NAME = "Topyak_bot2026" # Укажи точное имя своего репозитория
+REPO_NAME = "Topyak_bot2026"
 GITHUB_TOKEN = os.getenv("GH_TOKEN")
 
 
-# Загружаем модераторов из файла при старте
-def load_moderators():
-    if os.path.exists(MODS_FILE):
+def load_data(filename):
+    if os.path.exists(filename):
         try:
-            with open(MODS_FILE, "r", encoding="utf-8") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {int(chat_id): {int(uid): name for uid, name in mods.items()} for chat_id, mods in data.items()}
+                return {int(chat_id): {int(uid) if str(uid).isdigit() else uid: val for uid, val in items.items()} for chat_id, items in data.items()}
         except Exception:
             return {}
     return {}
 
 
-group_moderators = load_moderators()
+group_moderators = load_data(MODS_FILE)
 
 
-# Автоматический пуш файла mods.json на GitHub через API
-async def push_mods_to_github():
+def load_antispam_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(chat_id): val for chat_id, val in data.items()}
+        except Exception:
+            return {}
+    return {}
+
+
+antispam_settings = load_antispam_settings()
+
+
+async def push_file_to_github(filename):
     if not GITHUB_TOKEN:
-        logging.warning("GitHub токен не найден в переменных окружения, авто-коммит пропущен.")
+        logging.warning("GitHub токен не найден, авто-коммит пропущен.")
         return
 
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{MODS_FILE}"
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{filename}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json"
@@ -58,35 +70,43 @@ async def push_mods_to_github():
                 file_info = await resp.json()
                 sha = file_info.get("sha")
 
-        with open(MODS_FILE, "r", encoding="utf-8") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             content_str = f.read()
         
         content_encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
 
         payload = {
-            "message": "Auto-update mods.json via bot command",
+            "message": f"Auto-update {filename} via bot command",
             "content": content_encoded,
-            "branch": "main" # Если у тебя основная ветка master, смени здесь
+            "branch": "main"
         }
         if sha:
             payload["sha"] = sha
 
         async with session.put(url, headers=headers, json=payload) as resp:
             if resp.status in (200, 201):
-                logging.info("Файл mods.json успешно закоммичен на GitHub!")
+                logging.info(f"Файл {filename} успешно закоммичен на GitHub!")
             else:
                 text = await resp.text()
-                logging.error(f"Не удалось запушить mods.json в GitHub: {text}")
+                logging.error(f"Не удалось запушить {filename} в GitHub: {text}")
 
 
-# Сохраняем локально и отправляем в репозиторий
 async def save_and_sync_moderators():
     try:
         with open(MODS_FILE, "w", encoding="utf-8") as f:
             json.dump(group_moderators, f, ensure_ascii=False, indent=4)
-        await push_mods_to_github()
+        await push_file_to_github(MODS_FILE)
     except Exception as e:
         logging.error(f"Ошибка сохранения модераторов: {e}")
+
+
+async def save_and_sync_settings():
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(antispam_settings, f, ensure_ascii=False, indent=4)
+        await push_file_to_github(SETTINGS_FILE)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения настроек: {e}")
 
 
 async def set_main_menu(bot: Bot):
@@ -99,6 +119,7 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="addmod", description="Добавить модератора (в ответ)"),
         BotCommand(command="delmod", description="Убрать модератора (в ответ)"),
         BotCommand(command="mods", description="Список модераторов бота"),
+        BotCommand(command="antispam", description="Управление защитой от накрутки"),
     ]
     await bot.set_my_commands(main_menu_commands)
 
@@ -120,6 +141,121 @@ async def can_manage(message: types.Message) -> bool:
     if message.from_user.id in chat_mods:
         return True
     return False
+    # Команда /antispam с обучающей инструкцией и переключением режимов
+@dp.message(F.text.lower().regexp(r"^(/antispam(@\w+)?|антиспам)"))
+async def toggle_antispam(message: types.Message):
+    chat_id = message.chat.id
+    args = message.text.split()
+
+    # Если аргументов нет — показываем обучающую инструкцию и текущий статус
+    if len(args) < 2:
+        current_status = antispam_settings.get(chat_id, True)
+        status_text = "🟢 Включена" if current_status else "🔴 Выключена"
+        
+        help_text = (
+            f"🛡 **Управление защитой от накрутки (антиспам)**\n\n"
+            f"Текущий статус в этом чате: {status_text}\n\n"
+            f"📋 **Инструкция по настройке:**\n"
+            f"• Защита проверяет новых участников с помощью кнопки и таймера на 3 минуты, защищая чат от ботов.\n"
+            f"• Чтобы **включить** защиту, отправьте:\n` /antispam on `\n"
+            f"• Чтобы **выключить** защиту (убрать проверки), отправьте:\n` /antispam off `"
+        )
+        await message.answer(help_text, parse_mode="Markdown")
+        return
+
+    # Проверка прав для изменения настроек
+    if not await can_manage(message):
+        await message.reply("⛔ Только владелец или модераторы могут менять настройки защиты!")
+        return
+
+    mode = args[1].lower()
+    if mode in ("on", "вкл", "1", "true"):
+        antispam_settings[chat_id] = True
+        await save_and_sync_settings()
+        await message.answer("✅ Защита от накрутки успешно **включена** для этого чата!", parse_mode="Markdown")
+    elif mode in ("off", "выкл", "0", "false"):
+        antispam_settings[chat_id] = False
+        await save_and_sync_settings()
+        await message.answer("⚠️ Защита от накрутки **выключена**. Жесткие проверки больше не действуют.", parse_mode="Markdown")
+    else:
+        await message.answer("❌ Неверный параметр! Используйте:\n`/antispam on` — включить\n`/antispam off` — выключить", parse_mode="Markdown")
+
+
+# Защита от ботов при входе (учитывает статус антиспама)
+@dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
+async def welcome_and_verify(event: types.ChatMemberUpdated):
+    user = event.new_chat_member.user
+    chat_id = event.chat.id
+
+    # Пропускаем настоящих телеграм-ботов или если защита выключена в чате
+    if user.is_bot or not antispam_settings.get(chat_id, True):
+        return
+
+    try:
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user.id,
+            permissions=ChatPermissions(can_send_messages=False)
+        )
+    except Exception:
+        pass
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
+    ])
+
+    msg = await bot.send_message(
+        chat_id,
+        f"Привет, {user.full_name}!\n\n🤖 В этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **3 минут**, иначе система тебя исключит.",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+    async def check_verification():
+        await asyncio.sleep(180)
+        try:
+            member = await bot.get_chat_member(chat_id, user.id)
+            if member.status in ("restricted", "member"):
+                await bot.ban_chat_member(chat_id, user.id)
+                await bot.unban_chat_member(chat_id, user.id)
+                await msg.edit_text(f"❌ Пользователь {user.full_name} не прошел верификацию и был исключен.")
+        except Exception:
+            pass
+
+    asyncio.create_task(check_verification())
+
+
+# Обработка нажатия кнопки верификации (только сам пользователь)
+@dp.callback_query(F.data.startswith("verify_"))
+async def verify_callback(callback: types.CallbackQuery):
+    target_user_id = int(callback.data.split("_")[1])
+    
+    if callback.from_user.id != target_user_id:
+        await callback.answer("⛔ Эта кнопка не для тебя!", show_alert=True)
+        return
+
+    chat_id = callback.message.chat.id
+
+    try:
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=callback.from_user.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_polls=True,
+                can_add_web_page_previews=True
+            )
+        )
+        await callback.message.delete()
+        await callback.answer("✅ Верификация пройдена! Добро пожаловать.", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 
 # ДОБАВИТЬ МОДЕРАТОРА
@@ -141,7 +277,7 @@ async def add_moderator(message: types.Message):
 
     group_moderators[chat_id][target_user.id] = target_user.full_name
     await save_and_sync_moderators()
-    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором и сохранен в облаке!")
+    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором и сохранен!")
 
 
 # УБРАТЬ МОДЕРАТОРА
@@ -182,21 +318,6 @@ async def list_moderators(message: types.Message):
         text += f"{idx}. {name} (ID: `{uid}`)\n"
         
     await message.answer(text, parse_mode="Markdown")
-
-
-# ПРИВЕТСТВИЕ
-@dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
-async def welcome_user(event: types.ChatMemberUpdated):
-    user = event.new_chat_member.user
-    try:
-        chat_info = await bot.get_chat(event.chat.id)
-        rules_text = chat_info.description if chat_info.description else "Описание группы пока не заполнено."
-        await event.chat.send_message(
-            f"Привет, {user.full_name}!\n\n📋 **Правила группы:**\n{rules_text}",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        await event.chat.send_message(f"Привет, {user.full_name}!")
 
 
 # ПРАВИЛА
