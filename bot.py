@@ -6,7 +6,7 @@ import base64
 import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import ChatMemberUpdatedFilter, MEMBER
+from aiogram.filters import ChatMemberUpdatedFilter, MEMBER, KICKED, LEFT
 from aiogram.types import BotCommand, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +23,7 @@ REPO_OWNER = "danikdubina6-netizen"
 REPO_NAME = "Topyak_bot2026"
 GITHUB_TOKEN = os.getenv("GH_TOKEN")
 
-# Словарь для отслеживания прошедших верификацию: {chat_id: {user_id: True}}
+# Словарь для отслеживания верификации: {chat_id: {user_id: True}}
 verified_users = {}
 
 
@@ -146,88 +146,110 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# Команда /antispam с обучающей инструкцией и переключением режимов
-@dp.message(F.text.lower().regexp(r"^(/antispam(@\w+)?|антиспам)"))
+# ЛОВИМ РУЧНЫЕ УДАЛЕНИЯ И ВХОДЫ
+@dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED | LEFT | MEMBER))
+async def track_chat_member_updates(event: types.ChatMemberUpdated):
+    chat_id = event.chat.id
+    user = event.new_chat_member.user
+    new_status = event.new_chat_member.status
+    old_status = event.old_chat_member.status
+    actor = event.from_user
+
+    if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
+        if actor and actor.id == (await bot.get_me()).id:
+            return
+
+        target_name = user.full_name
+        target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
+        target_str = f"{target_name} ({target_mention})"
+
+        if actor and actor.id != user.id:
+            actor_name = actor.full_name
+            actor_mention = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
+            actor_str = f"{actor_name} ({actor_mention})"
+            await bot.send_message(chat_id, f"Админ {actor_str} удалил {target_str}.", parse_mode="Markdown")
+        else:
+            if new_status == "kicked":
+                await bot.send_message(chat_id, f"Пользователь {target_str} был удален из чата.", parse_mode="Markdown")
+        return
+
+    if new_status == "member" and old_status in ("left", "kicked", "restricted"):
+        if user.is_bot or not antispam_settings.get(chat_id, True):
+            return
+
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user.id,
+                permissions=ChatPermissions(can_send_messages=False)
+            )
+        except Exception:
+            pass
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
+        ])
+
+        msg = await bot.send_message(
+            chat_id,
+            f"Привет, {user.full_name}!\n\nВ этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **3 минут**, иначе система тебя исключит.",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+        async def check_verification():
+            await asyncio.sleep(180)
+            try:
+                if chat_id in verified_users and user.id in verified_users[chat_id]:
+                    return  
+                
+                member = await bot.get_chat_member(chat_id, user.id)
+                if member.status in ("restricted", "member"):
+                    await bot.ban_chat_member(chat_id, user.id)
+                    await bot.unban_chat_member(chat_id, user.id)
+                    await msg.edit_text(f"Пользователь {user.full_name} не прошел верификацию и был исключен.")
+            except Exception:
+                pass
+
+        asyncio.create_task(check_verification())
+
+
+# Команда /antispam
+@dp.message(F.text.lower().regexp(r"^(/antispam(@[a-zA-Z0-9_]+)?|антиспам)"))
 async def toggle_antispam(message: types.Message):
     chat_id = message.chat.id
     args = message.text.split()
 
     if len(args) < 2:
         current_status = antispam_settings.get(chat_id, True)
-        status_text = "🟢 Включена" if current_status else "🔴 Выключена"
+        status_text = "Включена" if current_status else "Выключена"
         
         help_text = (
-            f"🛡 **Управление защитой от накрутки (антиспам)**\n\n"
+            f"Управление защитой от накрутки (антиспам)\n\n"
             f"Текущий статус в этом чате: {status_text}\n\n"
-            f"📋 **Инструкция по настройке:**\n"
-            f"• Защита проверяет новых участников с помощью кнопки и таймера на 3 минуты, защищая чат от ботов.\n"
-            f"• Чтобы **включить** защиту, отправьте:\n`/antispam on`\n"
-            f"• Чтобы **выключить** защиту (убрать проверки), отправьте:\n`/antispam off`"
+            f"Инструкция по настройке:\n"
+            f"• Защита проверяет новых участников с помощью кнопки и таймера на 3 минуты.\n"
+            f"• Чтобы включить защиту: /antispam on\n"
+            f"• Чтобы выключить защиту: /antispam off"
         )
         await message.answer(help_text, parse_mode="Markdown")
         return
 
     if not await can_manage(message):
-        await message.reply("⛔ Только владелец или модераторы могут менять настройки защиты!")
+        await message.reply("Только владелец или модераторы могут менять настройки защиты!")
         return
 
     mode = args[1].lower()
     if mode in ("on", "вкл", "1", "true"):
         antispam_settings[chat_id] = True
         await save_and_sync_settings()
-        await message.answer("✅ Защита от накрутки успешно **включена** для этого чата!", parse_mode="Markdown")
+        await message.answer("Защита от накрутки успешно включена для этого чата!")
     elif mode in ("off", "выкл", "0", "false"):
         antispam_settings[chat_id] = False
         await save_and_sync_settings()
-        await message.answer("⚠️ Защита от накрутки **выключена**. Жесткие проверки больше не действуют.", parse_mode="Markdown")
+        await message.answer("Защита от накрутки выключена.")
     else:
-        await message.answer("❌ Неверный параметр! Используйте:\n`/antispam on` — включить\n`/antispam off` — выключить", parse_mode="Markdown")
-
-
-# Защита от ботов при входе (учитывает статус антиспама)
-@dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
-async def welcome_and_verify(event: types.ChatMemberUpdated):
-    user = event.new_chat_member.user
-    chat_id = event.chat.id
-
-    if user.is_bot or not antispam_settings.get(chat_id, True):
-        return
-
-    try:
-        await bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user.id,
-            permissions=ChatPermissions(can_send_messages=False)
-        )
-    except Exception:
-        pass
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
-    ])
-
-    msg = await bot.send_message(
-        chat_id,
-        f"Привет, {user.full_name}!\n\n🤖 В этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **3 минут**, иначе система тебя исключит.",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
-
-    async def check_verification():
-        await asyncio.sleep(180)
-        try:
-            if chat_id in verified_users and user.id in verified_users[chat_id]:
-                return  # Проверка уже пройдена, не баним
-            
-            member = await bot.get_chat_member(chat_id, user.id)
-            if member.status in ("restricted", "member"):
-                await bot.ban_chat_member(chat_id, user.id)
-                await bot.unban_chat_member(chat_id, user.id)
-                await msg.edit_text(f"❌ Пользователь {user.full_name} не прошел верификацию и был исключен.")
-        except Exception:
-            pass
-
-    asyncio.create_task(check_verification())
+        await message.answer("Неверный параметр! Используйте: /antispam on или /antispam off")
 
 
 @dp.callback_query(F.data.startswith("verify_"))
@@ -235,7 +257,7 @@ async def verify_callback(callback: types.CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
     
     if callback.from_user.id != target_user_id:
-        await callback.answer("⛔ Эта кнопка не для тебя!", show_alert=True)
+        await callback.answer("Эта кнопка не для тебя!", show_alert=True)
         return
 
     chat_id = callback.message.chat.id
@@ -262,20 +284,20 @@ async def verify_callback(callback: types.CallbackQuery):
             )
         )
         await callback.message.delete()
-        await callback.answer("✅ Верификация пройдена! Добро пожаловать.", show_alert=True)
+        await callback.answer("Верификация пройдена! Добро пожаловать.", show_alert=True)
     except Exception as e:
         await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 
 # ДОБАВИТЬ МОДЕРАТОРА
-@dp.message(F.text.lower().regexp(r"^(/addmod(@\w+)?|добавить модератора)"))
+@dp.message(F.text.lower().regexp(r"^(/addmod(@[a-zA-Z0-9_]+)?|добавить модератора)"))
 async def add_moderator(message: types.Message):
     if not await is_owner(message):
-        await message.reply("⛔ Только владелец группы может назначать модераторов!")
+        await message.reply("Только владелец группы может назначать модераторов!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай на сообщение пользователя!", parse_mode="Markdown")
+        await message.reply("Сделай реплай на сообщение пользователя!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -286,18 +308,18 @@ async def add_moderator(message: types.Message):
 
     group_moderators[chat_id][target_user.id] = target_user.full_name
     await save_and_sync_moderators()
-    await message.answer(f"✅ Пользователь {target_user.full_name} назначен модератором и сохранен!")
+    await message.answer(f"Пользователь {target_user.full_name} назначен модератором и сохранен!")
 
 
 # УБРАТЬ МОДЕРАТОРА
-@dp.message(F.text.lower().regexp(r"^(/delmod(@\w+)?|убрать модератора)"))
+@dp.message(F.text.lower().regexp(r"^(/delmod(@[a-zA-Z0-9_]+)?|убрать модератора)"))
 async def remove_moderator(message: types.Message):
     if not await is_owner(message):
-        await message.reply("⛔ Только владелец группы может снимать модераторов!")
+        await message.reply("Только владелец группы может снимать модераторов!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай на сообщение модератора!", parse_mode="Markdown")
+        await message.reply("Сделай реплай на сообщение модератора!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -307,22 +329,22 @@ async def remove_moderator(message: types.Message):
     if target_user.id in chat_mods:
         del chat_mods[target_user.id]
         await save_and_sync_moderators()
-        await message.answer(f"🗑 Пользователь {target_user.full_name} снят с поста модератора.")
+        await message.answer(f"Пользователь {target_user.full_name} снят с поста модератора.")
     else:
-        await message.answer(f"⚠️ Пользователь не найден в модераторах этого чата.")
+        await message.answer("Пользователь не найден в модераторах этого чата.")
 
 
 # СПИСОК МОДЕРАТОРОВ
-@dp.message(F.text.lower().regexp(r"^(/mods(@\w+)?|список администраторов|модераторы|админы)"))
+@dp.message(F.text.lower().regexp(r"^(/mods(@[a-zA-Z0-9_]+)?|список администраторов|модераторы|админы)"))
 async def list_moderators(message: types.Message):
     chat_id = message.chat.id
     chat_mods = group_moderators.get(chat_id, {})
 
     if not chat_mods:
-        await message.answer("ℹ️ У этого бота пока нет модераторов в данном чате.")
+        await message.answer("У этого бота пока нет модераторов в данном чате.")
         return
     
-    text = "🛡 **Список модераторов этого чата:**\n\n"
+    text = "Список модераторов этого чата:\n\n"
     for idx, (uid, name) in enumerate(chat_mods.items(), 1):
         text += f"{idx}. {name} (ID: `{uid}`)\n"
         
@@ -330,31 +352,31 @@ async def list_moderators(message: types.Message):
 
 
 # ПРАВИЛА
-@dp.message(F.text.lower().regexp(r"^(/rules(@\w+)?|правила|каталог правил)"))
+@dp.message(F.text.lower().regexp(r"^(/rules(@[a-zA-Z0-9_]+)?|правила|каталог правил)"))
 async def text_rules(message: types.Message):
     if message.chat.type == "private":
-        await message.answer("ℹ️ Используй эту команду в группе!")
+        await message.answer("Используй эту команду в группе!")
         return
         
     try:
         chat_info = await bot.get_chat(message.chat.id)
         if chat_info.description:
-            await message.answer(f"📋 **Правила группы:**\n\n{chat_info.description}", parse_mode="Markdown")
+            await message.answer(f"Правила группы:\n\n{chat_info.description}", parse_mode="Markdown")
         else:
-            await message.answer("⚠️ У группы нет описания с правилами!")
+            await message.answer("У группы нет описания с правилами!")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
 
 # БАН
-@dp.message(F.text.lower().regexp(r"^(/ban(@\w+)?|бан)"))
+@dp.message(F.text.lower().regexp(r"^(/ban(@[a-zA-Z0-9_]+)?|бан)"))
 async def text_ban(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ Нет прав!")
+        await message.reply("Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай на сообщение нарушителя!")
+        await message.reply("Сделай реплай на сообщение нарушителя!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -396,14 +418,14 @@ async def text_ban(message: types.Message):
 
 
 # РАЗБАН
-@dp.message(F.text.lower().regexp(r"^(/unban(@\w+)?|разбан)"))
+@dp.message(F.text.lower().regexp(r"^(/unban(@[a-zA-Z0-9_]+)?|разбан)"))
 async def text_unban(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ Нет прав!")
+        await message.reply("Нет прав!")
         return
     
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай!")
+        await message.reply("Сделай реплай!")
         return
     
     target_user = message.reply_to_message.from_user
@@ -415,14 +437,14 @@ async def text_unban(message: types.Message):
 
 
 # МУТ
-@dp.message(F.text.lower().regexp(r"^(/mute(@\w+)?|мут)"))
+@dp.message(F.text.lower().regexp(r"^(/mute(@[a-zA-Z0-9_]+)?|мут)"))
 async def text_mute(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ Нет прав!")
+        await message.reply("Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай!")
+        await message.reply("Сделай реплай!")
         return
     
     target_user = message.reply_to_message.from_user
@@ -464,14 +486,14 @@ async def text_mute(message: types.Message):
 
 
 # РАЗМУТ
-@dp.message(F.text.lower().regexp(r"^(/unmute(@\w+)?|размут)"))
+@dp.message(F.text.lower().regexp(r"^(/unmute(@[a-zA-Z0-9_]+)?|размут)"))
 async def text_unmute(message: types.Message):
     if not await can_manage(message):
-        await message.reply("⛔ Нет прав!")
+        await message.reply("Нет прав!")
         return
 
     if not message.reply_to_message:
-        await message.reply("❌ Сделай реплай!")
+        await message.reply("Сделай реплай!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -502,4 +524,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                
+    
