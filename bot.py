@@ -155,22 +155,23 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
     old_status = event.old_chat_member.status
     actor = event.from_user
 
+    # Игнорируем действия самого бота
+    if actor and actor.id == (await bot.get_me()).id:
+        return
+
+    # Формируем красивое представление участника (юз или ID)
+    target_name = user.full_name
+    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
+    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
+
     if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
-        if actor and actor.id == (await bot.get_me()).id:
-            return
-
-        target_name = user.full_name
-        target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
-        target_str = f"{target_name} ({target_mention})"
-
         if actor and actor.id != user.id:
             actor_name = actor.full_name
             actor_mention = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
-            actor_str = f"{actor_name} ({actor_mention})"
-            await bot.send_message(chat_id, f"Админ {actor_str} удалил {target_str}.", parse_mode="Markdown")
+            actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
+            await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
         else:
-            if new_status == "kicked":
-                await bot.send_message(chat_id, f"Пользователь {target_str} был удален из чата.", parse_mode="Markdown")
+            await bot.send_message(chat_id, f"Участник {target_str} покинул чат.", parse_mode="Markdown")
         return
 
     if new_status == "member" and old_status in ("left", "kicked", "restricted"):
@@ -524,4 +525,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
