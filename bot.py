@@ -33,7 +33,8 @@ def load_data(filename):
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return {int(chat_id): {int(uid) if str(uid).isdigit() else uid: val for uid, val in items.items()} for chat_id, items in data.items()}
-        except Exception:
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {filename}: {e}")
             return {}
     return {}
 
@@ -47,7 +48,8 @@ def load_antispam_settings():
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return {int(chat_id): val for chat_id, val in data.items()}
-        except Exception:
+        except Exception as e:
+            logging.error(f"Ошибка загрузки настроек: {e}")
             return {}
     return {}
 
@@ -146,7 +148,7 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# ЛОВИМ РУЧНЫЕ УДАЛЕНИЯ И ВХОДЫ
+# ЛОВИМ ВХОДЫ И ВЫХОДЫ УЧАСТНИКОВ
 @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED | LEFT | MEMBER))
 async def track_chat_member_updates(event: types.ChatMemberUpdated):
     chat_id = event.chat.id
@@ -156,26 +158,32 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
     actor = event.from_user
 
     # Игнорируем действия самого бота
-    if actor and actor.id == (await bot.get_me()).id:
+    bot_info = await bot.get_me()
+    if actor and actor.id == bot_info.id:
         return
 
-    # Формируем красивое представление участника (юз или ID)
+    # Форматирование упоминания: юз или ID
     target_name = user.full_name
     target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
     target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
 
+    # Фиксация выхода или удаления участника
     if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
-        if actor and actor.id != user.id:
+        if actor and actor.id != user.id and actor.id != bot_info.id:
             actor_name = actor.full_name
-            actor_mention = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
             actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
             await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
         else:
             await bot.send_message(chat_id, f"Участник {target_str} покинул чат.", parse_mode="Markdown")
         return
 
+    # Вход нового участника — запуск проверки во ВСЕХ чатах
     if new_status == "member" and old_status in ("left", "kicked", "restricted"):
-        if user.is_bot or not antispam_settings.get(chat_id, True):
+        if user.is_bot:
+            return
+
+        # Защита включена по умолчанию во всех чатах (True)
+        if not antispam_settings.get(chat_id, True):
             return
 
         try:
@@ -184,8 +192,8 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 user_id=user.id,
                 permissions=ChatPermissions(can_send_messages=False)
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось ограничить права пользователю {user.id}: {e}")
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
@@ -193,66 +201,30 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
 
         msg = await bot.send_message(
             chat_id,
-            f"Привет, {user.full_name}!\n\nВ этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **3 минут**, иначе система тебя исключит.",
+            f"Привет, {user.full_name}!\n\nВ этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **5 минут**, иначе система тебя исключит.",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
 
+        # Таймер на 5 минут (300 секунд) для верификации
         async def check_verification():
-            await asyncio.sleep(180)
+            await asyncio.sleep(300)
             try:
-                if chat_id in verified_users and user.id in verified_users[chat_id]:
+                if chat_id in verified_users and verified_users[chat_id].get(user.id):
                     return  
                 
                 member = await bot.get_chat_member(chat_id, user.id)
                 if member.status in ("restricted", "member"):
                     await bot.ban_chat_member(chat_id, user.id)
                     await bot.unban_chat_member(chat_id, user.id)
-                    await msg.edit_text(f"Пользователь {user.full_name} не прошел верификацию и был исключен.")
-            except Exception:
-                pass
+                    await msg.edit_text(f"Пользователь {user.full_name} не прошёл верификацию и был исключён.")
+            except Exception as e:
+                logging.error(f"Ошибка проверки верификации: {e}")
 
         asyncio.create_task(check_verification())
 
 
-# Команда /antispam
-@dp.message(F.text.lower().regexp(r"^(/antispam(@[a-zA-Z0-9_]+)?|антиспам)"))
-async def toggle_antispam(message: types.Message):
-    chat_id = message.chat.id
-    args = message.text.split()
-
-    if len(args) < 2:
-        current_status = antispam_settings.get(chat_id, True)
-        status_text = "Включена" if current_status else "Выключена"
-        
-        help_text = (
-            f"Управление защитой от накрутки (антиспам)\n\n"
-            f"Текущий статус в этом чате: {status_text}\n\n"
-            f"Инструкция по настройке:\n"
-            f"• Защита проверяет новых участников с помощью кнопки и таймера на 3 минуты.\n"
-            f"• Чтобы включить защиту: /antispam on\n"
-            f"• Чтобы выключить защиту: /antispam off"
-        )
-        await message.answer(help_text, parse_mode="Markdown")
-        return
-
-    if not await can_manage(message):
-        await message.reply("Только владелец или модераторы могут менять настройки защиты!")
-        return
-
-    mode = args[1].lower()
-    if mode in ("on", "вкл", "1", "true"):
-        antispam_settings[chat_id] = True
-        await save_and_sync_settings()
-        await message.answer("Защита от накрутки успешно включена для этого чата!")
-    elif mode in ("off", "выкл", "0", "false"):
-        antispam_settings[chat_id] = False
-        await save_and_sync_settings()
-        await message.answer("Защита от накрутки выключена.")
-    else:
-        await message.answer("Неверный параметр! Используйте: /antispam on или /antispam off")
-
-
+# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
 @dp.callback_query(F.data.startswith("verify_"))
 async def verify_callback(callback: types.CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
@@ -281,13 +253,54 @@ async def verify_callback(callback: types.CallbackQuery):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
-                can_add_web_page_previews=True
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
             )
         )
         await callback.message.delete()
-        await callback.answer("Верификация пройдена! Добро пожаловать.", show_alert=True)
+        await callback.answer("Верификация пройдена! Добро пожаловать в чат.", show_alert=True)
     except Exception as e:
-        await callback.answer(f"Ошибка: {e}", show_alert=True)
+        await callback.answer(f"Ошибка при выдаче прав: {e}", show_alert=True)
+
+
+# Команда /antispam с подробным статусом и инструкцией
+@dp.message(F.text.lower().regexp(r"^(/antispam(@[a-zA-Z0-9_]+)?|антиспам)"))
+async def toggle_antispam(message: types.Message):
+    chat_id = message.chat.id
+    args = message.text.split()
+
+    if len(args) < 2:
+        current_status = antispam_settings.get(chat_id, True)
+        status_text = "🟢 Включена" if current_status else "🔴 Выключена"
+        
+        help_text = (
+            f"🛡 **Управление защитой от накрутки (антиспам)**\n\n"
+            f"• Текущий статус в этом чате: **{status_text}**\n\n"
+            f"**Как настроить:**\n"
+            f"• Включить защиту: `/antispam on`\n"
+            f"• Выключить защиту: `/antispam off`\n\n"
+            f"*(Защита автоматически проверяет новых участников кнопкой «Я не бот» с таймером на 5 минут)*"
+        )
+        await message.answer(help_text, parse_mode="Markdown")
+        return
+
+    if not await can_manage(message):
+        await message.reply("Только владелец или модераторы могут менять настройки защиты!")
+        return
+
+    mode = args[1].lower()
+    if mode in ("on", "вкл", "1", "true"):
+        antispam_settings[chat_id] = True
+        await save_and_sync_settings()
+        await message.answer("🟢 Защита от накрутки успешно **включена** для этого чата!", parse_mode="Markdown")
+    elif mode in ("off", "выкл", "0", "false"):
+        antispam_settings[chat_id] = False
+        await save_and_sync_settings()
+        await message.answer("🔴 Защита от накрутки **выключена**.", parse_mode="Markdown")
+    else:
+        await message.answer("❌ Неверный параметр! Используйте: `/antispam on` или `/antispam off`", parse_mode="Markdown")
 
 
 # ДОБАВИТЬ МОДЕРАТОРА
@@ -510,7 +523,10 @@ async def text_unmute(message: types.Message):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
-                can_add_web_page_previews=True
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
             )
         )
         await message.answer(f"Пользователь {target_user.full_name} размучен.")
@@ -525,4 +541,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
