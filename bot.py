@@ -6,7 +6,6 @@ import base64
 import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import ChatMemberUpdatedFilter, MEMBER, KICKED, LEFT
 from aiogram.types import BotCommand, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
@@ -148,8 +147,8 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# ЛОВИМ ВХОДЫ И КИКИ АДМИНАМИ
-@dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED | LEFT | MEMBER))
+# УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВХОДОВ И ВЫХОДОВ УЧАСТНИКОВ
+@dp.chat_member()
 async def track_chat_member_updates(event: types.ChatMemberUpdated):
     chat_id = event.chat.id
     user = event.new_chat_member.user
@@ -165,15 +164,17 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
     target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
     target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
 
-    # Если администратор кикнул участника
+    # 1. Выход или кик из чата
     if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
         if actor and actor.id != user.id and actor.id != bot_info.id:
             actor_name = actor.full_name
             actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
             await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
+        else:
+            await bot.send_message(chat_id, f"Участник {target_str} покинул чат.", parse_mode="Markdown")
         return
 
-    # Вход нового участника (Антиспам)
+    # 2. Вход нового участника (Антиспам)
     if new_status == "member" and old_status in ("left", "kicked", "restricted"):
         if user.is_bot:
             return
@@ -202,7 +203,7 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
         )
 
         async def check_verification():
-            await asyncio.sleep(300) # 5 минут таймер
+            await asyncio.sleep(300)  # 5 минут таймер
             try:
                 if chat_id in verified_users and verified_users[chat_id].get(user.id):
                     return  
@@ -216,20 +217,6 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 logging.error(f"Ошибка проверки верификации: {e}")
 
         asyncio.create_task(check_verification())
-
-
-# ГАРАНТИРОВАННО ЛОВИМ ДОБРОВОЛЬНЫЙ ВЫХОД УЧАСТНИКА ИЗ ЧАТА
-@dp.message(F.left_chat_member)
-async def on_user_left(message: types.Message):
-    user = message.left_chat_member
-    if not user or user.is_bot:
-        return
-
-    target_name = user.full_name
-    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
-    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
-
-    await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
 
 
 # ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
@@ -549,3 +536,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+            
