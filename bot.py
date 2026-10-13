@@ -147,38 +147,17 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВХОДОВ И КИКОВ АДМИНАМИ
-@dp.chat_member()
-async def track_chat_member_updates(event: types.ChatMemberUpdated):
-    chat_id = event.chat.id
-    user = event.new_chat_member.user
-    new_status = event.new_chat_member.status
-    old_status = event.old_chat_member.status
-    actor = event.from_user
-
-    bot_info = await bot.get_me()
-    if actor and actor.id == bot_info.id:
+# ЖЕЛЕЗОБЕТОННЫЙ АНТИСПАМ (ВХОД НОВЫХ УЧАСТНИКОВ)
+@dp.message(F.new_chat_members)
+async def on_user_joined(message: types.Message):
+    chat_id = message.chat.id
+    
+    if not antispam_settings.get(chat_id, True):
         return
 
-    target_name = user.full_name
-    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
-    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
-
-    # 1. Если админ кикнул участника
-    if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
-        if actor and actor.id != user.id and actor.id != bot_info.id:
-            actor_name = actor.full_name
-            actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
-            await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
-        return
-
-    # 2. Вход нового участника (Антиспам)
-    if new_status == "member" and old_status in ("left", "kicked", "restricted"):
+    for user in message.new_chat_members:
         if user.is_bot:
-            return
-
-        if not antispam_settings.get(chat_id, True):
-            return
+            continue
 
         try:
             await bot.restrict_chat_member(
@@ -187,37 +166,36 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 permissions=ChatPermissions(can_send_messages=False)
             )
         except Exception as e:
-            logging.error(f"Не удалось ограничить права: {e}")
+            logging.error(f"Не удалось ограничить права новичку {user.id}: {e}")
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
         ])
 
-        msg = await bot.send_message(
-            chat_id,
+        msg = await message.answer(
             f"Привет, {user.full_name}!\n\nВ этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **5 минут**, иначе система тебя исключит.",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
 
-        async def check_verification():
+        async def check_verification(u_id=user.id, m_obj=msg):
             await asyncio.sleep(300)  # 5 минут таймер
             try:
-                if chat_id in verified_users and verified_users[chat_id].get(user.id):
+                if chat_id in verified_users and verified_users[chat_id].get(u_id):
                     return  
                 
-                member = await bot.get_chat_member(chat_id, user.id)
+                member = await bot.get_chat_member(chat_id, u_id)
                 if member.status in ("restricted", "member"):
-                    await bot.ban_chat_member(chat_id, user.id)
-                    await bot.unban_chat_member(chat_id, user.id)
-                    await msg.edit_text(f"Пользователь {user.full_name} не прошёл верификацию и был исключён.")
+                    await bot.ban_chat_member(chat_id, u_id)
+                    await bot.unban_chat_member(chat_id, u_id)
+                    await m_obj.edit_text(f"Пользователь не прошёл верификацию за 5 минут и был исключён.")
             except Exception as e:
-                logging.error(f"Ошибка проверки верификации: {e}")
+                logging.error(f"Ошибка таймера верификации: {e}")
 
         asyncio.create_task(check_verification())
 
 
-# ЖЕЛЕЗОБЕТОННЫЙ ПЕРЕХВАТЧИК ДОБРОВОЛЬНОГО ВЫХОДА ИЗ ЧАТА
+# УВЕДОМЛЕНИЕ О ВЫХОДЕ УЧАСТНИКА ИЗ ЧАТА
 @dp.message(F.left_chat_member)
 async def on_user_left(message: types.Message):
     user = message.left_chat_member
