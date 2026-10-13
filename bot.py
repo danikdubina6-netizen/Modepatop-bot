@@ -148,7 +148,7 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# ЛОВИМ ВХОДЫ И ВЫХОДЫ УЧАСТНИКОВ
+# ЛОВИМ ВХОДЫ И КИКИ АДМИНАМИ
 @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED | LEFT | MEMBER))
 async def track_chat_member_updates(event: types.ChatMemberUpdated):
     chat_id = event.chat.id
@@ -157,32 +157,27 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
     old_status = event.old_chat_member.status
     actor = event.from_user
 
-    # Игнорируем действия самого бота
     bot_info = await bot.get_me()
     if actor and actor.id == bot_info.id:
         return
 
-    # Форматирование упоминания: юз или ID
     target_name = user.full_name
     target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
     target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
 
-    # Фиксация выхода или удаления участника
+    # Если администратор кикнул участника
     if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
         if actor and actor.id != user.id and actor.id != bot_info.id:
             actor_name = actor.full_name
             actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
             await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
-        else:
-            await bot.send_message(chat_id, f"Участник {target_str} покинул чат.", parse_mode="Markdown")
         return
 
-    # Вход нового участника — запуск проверки во ВСЕХ чатах
+    # Вход нового участника (Антиспам)
     if new_status == "member" and old_status in ("left", "kicked", "restricted"):
         if user.is_bot:
             return
 
-        # Защита включена по умолчанию во всех чатах (True)
         if not antispam_settings.get(chat_id, True):
             return
 
@@ -193,7 +188,7 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 permissions=ChatPermissions(can_send_messages=False)
             )
         except Exception as e:
-            logging.error(f"Не удалось ограничить права пользователю {user.id}: {e}")
+            logging.error(f"Не удалось ограничить права: {e}")
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
@@ -206,9 +201,8 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
             parse_mode="Markdown"
         )
 
-        # Таймер на 5 минут (300 секунд) для верификации
         async def check_verification():
-            await asyncio.sleep(300)
+            await asyncio.sleep(300) # 5 минут таймер
             try:
                 if chat_id in verified_users and verified_users[chat_id].get(user.id):
                     return  
@@ -222,6 +216,20 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 logging.error(f"Ошибка проверки верификации: {e}")
 
         asyncio.create_task(check_verification())
+
+
+# ГАРАНТИРОВАННО ЛОВИМ ДОБРОВОЛЬНЫЙ ВЫХОД УЧАСТНИКА ИЗ ЧАТА
+@dp.message(F.left_chat_member)
+async def on_user_left(message: types.Message):
+    user = message.left_chat_member
+    if not user or user.is_bot:
+        return
+
+    target_name = user.full_name
+    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
+    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
+
+    await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
 
 
 # ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
@@ -265,7 +273,7 @@ async def verify_callback(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка при выдаче прав: {e}", show_alert=True)
 
 
-# Команда /antispam с подробным статусом и инструкцией
+# КОМАНДА /antispam СО СТАТУСОМ И ИНСТРУКЦИЕЙ
 @dp.message(F.text.lower().regexp(r"^(/antispam(@[a-zA-Z0-9_]+)?|антиспам)"))
 async def toggle_antispam(message: types.Message):
     chat_id = message.chat.id
@@ -536,9 +544,8 @@ async def text_unmute(message: types.Message):
 
 async def main():
     await set_main_menu(bot)
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
