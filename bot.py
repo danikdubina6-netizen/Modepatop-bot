@@ -147,7 +147,7 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
-# УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВХОДОВ И ВЫХОДОВ УЧАСТНИКОВ
+# УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВХОДОВ И КИКОВ АДМИНАМИ
 @dp.chat_member()
 async def track_chat_member_updates(event: types.ChatMemberUpdated):
     chat_id = event.chat.id
@@ -164,14 +164,12 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
     target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
     target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
 
-    # 1. Выход или кик из чата
+    # 1. Если админ кикнул участника
     if new_status in ("kicked", "left") and old_status not in ("kicked", "left"):
         if actor and actor.id != user.id and actor.id != bot_info.id:
             actor_name = actor.full_name
             actor_str = f"@{actor.username}" if actor.username else f"ID: `{actor.id}`"
             await bot.send_message(chat_id, f"Админ {actor_name} ({actor_str}) удалил участника {target_str}.", parse_mode="Markdown")
-        else:
-            await bot.send_message(chat_id, f"Участник {target_str} покинул чат.", parse_mode="Markdown")
         return
 
     # 2. Вход нового участника (Антиспам)
@@ -217,6 +215,20 @@ async def track_chat_member_updates(event: types.ChatMemberUpdated):
                 logging.error(f"Ошибка проверки верификации: {e}")
 
         asyncio.create_task(check_verification())
+
+
+# ЖЕЛЕЗОБЕТОННЫЙ ПЕРЕХВАТЧИК ДОБРОВОЛЬНОГО ВЫХОДА ИЗ ЧАТА
+@dp.message(F.left_chat_member)
+async def on_user_left(message: types.Message):
+    user = message.left_chat_member
+    if not user or user.is_bot:
+        return
+
+    target_name = user.full_name
+    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
+    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
+
+    await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
 
 
 # ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
@@ -536,4 +548,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+        
