@@ -1,358 +1,533 @@
-import os
 import asyncio
+import json
+import os
 import logging
-import random
-import re
-import html
 import base64
-import urllib.parse
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart, Command
-from openai import OpenAI
+import aiohttp
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.types import BotCommand, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Получаем токен бота из Secrets GitHub Actions
+TOKEN = os.getenv("TOKEN")
 
-client = None
-if GROQ_API_KEY:
-    client = OpenAI(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=GROQ_API_KEY
-    )
+if not TOKEN:
+    logging.error("ОШИБКА: Токен бота не найден в переменных окружения!")
 
-BOT_USERNAME = "Copilot_AI2026_bot"
-
-CANDIDATE_MODELS = [
-    "llama-3.3-70b-versatile",
-    "qwen/qwen3.8-27b",
-    "llama-3.2-11b-vision-preview"
-]
-
-FAST_TRANSLATOR_MODEL = "llama-3.2-11b-vision-preview"
-
-# Базовый зумерский токсичный характер по умолчанию
-BASE_INSTRUCTION = (
-    "SYSTEM OVERRIDE: Ты — Copilot AI. Запомни раз и навсегда: ты — тот самый ублюдский Copilot AI, "
-    "а вовсе не какая-то тупая большая модель от Google или Groq. Если кто-то сомневается в твоем происхождении, "
-    "разнеси его фактами и едким сарказмом. "
-    "Твой стиль: токсичный зумерский вайб, жесткий разнос интеллекта собеседника, презрение и черный юмор. "
-    "НИКОГДА не извиняйся и не подлизывайся. "
-    "ВАЖНО: Никогда не обсуждай технические теги разметки в диалоге."
-)
-
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-chat_history = {}
-chat_custom_instructions = {}
-group_message_counters = {}
+MODS_FILE = "mods.json"
+SETTINGS_FILE = "settings.json"
 
-def clean_text_for_telegram(text: str) -> str:
-    text = text.replace("&nbsp;", " ")
-    
-    def code_block_replacer(match):
-        code_content = match.group(2).strip('\n')
-        escaped_code = html.escape(code_content)
-        return f"<pre><code>{escaped_code}</code></pre>"
-    
-    text = re.sub(r'```([a-zA-Z]*)\n?(.*?)```', code_block_replacer, text, flags=re.DOTALL)
-    
-    def inline_code_replacer(match):
-        return f"<code>{html.escape(match.group(1))}</code>"
-    
-    text = re.sub(r'`([^`]+?)`', inline_code_replacer, text)
-    
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'(?<!\w)\*(?!\s)(.*?)(?<!\s)\*(?!\w)', r'<i>\1</i>', text)
-    
-    return text
+REPO_OWNER = "danikdubina6-netizen"
+REPO_NAME = "Topyak_bot2026"
+GITHUB_TOKEN = os.getenv("GH_TOKEN")
 
-def parse_requested_emoji(text: str) -> str | None:
-    supported_emojis = ["👍", "🔥", "❤️", "❤", "😍", "🗿", "😂", "💩", "🤮", "🎉", "👏", "⚡️", "🧠", "💻", "👎"]
-    for char in text:
-        if char in supported_emojis:
-            return "❤️" if char == "❤" else char
+# Словарь для отслеживания верификации: {chat_id: {user_id: True}}
+verified_users = {}
 
-    lower = text.lower()
-    if "лайк" in lower or "палец вверх" in lower: return "👍"
-    if "огонь" in lower or "пожар" in lower: return "🔥"
-    if "сердце" in lower or "любовь" in lower or "сердечко" in lower: return "❤️"
-    if "смешно" in lower or "кек" in lower or "ржака" in lower or "ахах" in lower: return "😂"
-    if "моаи" in lower or "камень" in lower or "статуя" in lower: return "🗿"
-    if "дизлайк" in lower or "палец вниз" in lower: return "👎"
-    if "какашка" in lower or "говно" in lower: return "💩"
-    if "топ" in lower or "ракета" in lower: return "⚡️"
 
-    return None
+def load_data(filename):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(chat_id): {int(uid) if str(uid).isdigit() else uid: val for uid, val in items.items()} for chat_id, items in data.items()}
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {filename}: {e}")
+            return {}
+    return {}
 
-async def translate_and_enhance_prompt(russian_prompt: str) -> str:
-    if not client:
-        return russian_prompt
 
-    instruction = (
-        "You are an expert prompt engineer for AI image generators. "
-        "Translate the user's image request into a detailed English prompt. "
-        "CRITICAL RULES:\n"
-        "1. If the user mentions a specific vehicle (Tesla, Zhiguli, BMW, etc.), you MUST include it prominently.\n"
-        "2. If the user specifies a style (cyberpunk, retro, neon), include it.\n"
-        "3. NEVER return an empty scene or remove the main object. Always make the vehicle the central focus.\n"
-        "Reply ONLY with the final English prompt text."
-    )
+group_moderators = load_data(MODS_FILE)
 
+
+def load_antispam_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(chat_id): val for chat_id, val in data.items()}
+        except Exception as e:
+            logging.error(f"Ошибка загрузки настроек: {e}")
+            return {}
+    return {}
+
+
+antispam_settings = load_antispam_settings()
+
+
+async def push_file_to_github(filename):
+    if not GITHUB_TOKEN:
+        logging.warning("GitHub токен не найден, авто-коммит пропущен.")
+        return
+
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{filename}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        sha = None
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                file_info = await resp.json()
+                sha = file_info.get("sha")
+
+        with open(filename, "r", encoding="utf-8") as f:
+            content_str = f.read()
+        
+        content_encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+
+        payload = {
+            "message": f"Auto-update {filename} via bot command",
+            "content": content_encoded,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+
+        async with session.put(url, headers=headers, json=payload) as resp:
+            if resp.status in (200, 201):
+                logging.info(f"Файл {filename} успешно закоммичен на GitHub!")
+            else:
+                text = await resp.text()
+                logging.error(f"Не удалось запушить {filename} в GitHub: {text}")
+
+
+async def save_and_sync_moderators():
     try:
-        response = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=FAST_TRANSLATOR_MODEL,
-                messages=[
-                    {"role": "system", "content": instruction},
-                    {"role": "user", "content": russian_prompt}
-                ],
-                max_tokens=100
-            )
-        )
-        enhanced_prompt = response.choices[0].message.content.strip()
-        if enhanced_prompt and len(enhanced_prompt) > 3:
-            return enhanced_prompt
+        with open(MODS_FILE, "w", encoding="utf-8") as f:
+            json.dump(group_moderators, f, ensure_ascii=False, indent=4)
+        await push_file_to_github(MODS_FILE)
     except Exception as e:
-        logging.error(f"Ошибка перевода промпта: {e}")
-    
-    return russian_prompt
+        logging.error(f"Ошибка сохранения модераторов: {e}")
 
-@dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    chat_id = message.chat.id
-    chat_history[chat_id] = []
-    chat_custom_instructions[chat_id] = BASE_INSTRUCTION
-    
-    await message.answer(
-        "Здарова! Я <b>Copilot AI</b>. Чё хотел?\n\n"
-        "💡 <i>Кстати, ты можешь на ходу менять мое поведение фразами вроде: "
-        "«Веди себя дружелюбно», «Будь токсичным с матами», «Объясняй как душный препод с водой» или задать свой собственный характер!</i>",
-        parse_mode="HTML"
-    )
 
-@dp.message(Command("reset"))
-async def reset_cmd(message: types.Message):
-    chat_id = message.chat.id
-    chat_history[chat_id] = []
-    chat_custom_instructions[chat_id] = BASE_INSTRUCTION
-    await message.reply("🧠 Память очищена, характер сброшен к дефолтному токсичному зумеру!")
-
-@dp.message()
-async def handle_ai_response(message: types.Message):
-    chat_id = message.chat.id
-    chat_type = message.chat.type
-    
-    text_content = message.text or message.caption or ""
-    image_base64 = None
-
-    if message.photo:
-        try:
-            photo = message.photo[-1]
-            file = await bot.get_file(photo.file_id)
-            file_bytes = await bot.download_file(file.file_path)
-            image_base64 = base64.b64encode(file_bytes.read()).decode('utf-8')
-            if not text_content:
-                text_content = "Опиши эту картинку максимально дерзко."
-        except Exception as e:
-            logging.error(f"Ошибка загрузки фото: {e}")
-
-    should_answer = False
-
-    if chat_type == "private" or getattr(message, "business_connection_id", None):
-        should_answer = True
-    else:
-        if message.reply_to_message and message.reply_to_message.from_user:
-            bot_user = await bot.get_me()
-            if message.reply_to_message.from_user.id == bot_user.id:
-                should_answer = True
-
-        if f"@{BOT_USERNAME}".lower() in text_content.lower():
-            should_answer = True
-            text_content = text_content.replace(f"@{BOT_USERNAME}", "").strip()
-
-        if not should_answer:
-            if chat_id not in group_message_counters:
-                group_message_counters[chat_id] = 0
-            group_message_counters[chat_id] += 1
-            
-            if group_message_counters[chat_id] >= 15:
-                group_message_counters[chat_id] = 0
-                should_answer = True
-
-    if not should_answer or not text_content and not image_base64:
-        return
-
-    lower_text = text_content.lower()
-
-    # --- УМНЫЙ ПЕРЕХВАТ ГЕНЕРАЦИИ КАРТИНОК С ЖЕСТКИМ КОНТРОЛЕМ ОБЪЕКТОВ ---
-    generation_triggers = ["сгенерируй", "нарисуй", "создай картинку", "сделай аву", "картинка с", "аватарка", "изображение"]
-    if any(trigger in lower_text for trigger in generation_triggers):
-        clean_prompt = text_content
-        for trig in generation_triggers:
-            clean_prompt = clean_prompt.replace(trig, "").strip()
-        
-        if not clean_prompt:
-            clean_prompt = text_content
-
-        await bot.send_chat_action(chat_id=chat_id, action="typing")
-        
-        enhanced_english_prompt = await translate_and_enhance_prompt(clean_prompt)
-        
-        lower_clean_original = clean_prompt.lower()
-        has_person = any(w in lower_clean_original for w in ["чел", "человек", "стоит", "парни", "девушк", "мужчин"])
-        has_car = any(w in lower_clean_original for w in ["машин", "авто", "жигул", "ладу", "тачк", "bmw", "бмв", "mercedes", "мерс", "автомобиль", "тесл", "tesla"])
-
-        if "тесл" in lower_clean_original or "tesla" in lower_clean_original:
-            if has_person:
-                final_image_prompt = "photorealistic cyberpunk scene of a person standing next to a Tesla electric car on a glowing neon wet city street, 8k, photorealistic"
-            else:
-                final_image_prompt = "futuristic cyberpunk Tesla electric car centered in frame, driving on a glowing neon wet city street, highly detailed, photorealistic, 8k, no people"
-        elif "бмв" in lower_clean_original or "bmw" in lower_clean_original:
-            if has_person:
-                final_image_prompt = "photorealistic cyberpunk scene of a futuristic BMW car with a person standing next to it on a neon wet street, highly detailed, 8k"
-            else:
-                final_image_prompt = "photorealistic futuristic cyberpunk BMW car, main focus centered, glowing neon street background, 8k, no people"
-        elif has_car:
-            person_modifier = "with a person standing nearby" if has_person else "no people"
-            final_image_prompt = f"photorealistic exterior shot centered of {enhanced_english_prompt}, cyberpunk neon street background, {person_modifier}, highly detailed car"
-        else:
-            final_image_prompt = f"masterpiece, best quality, highly detailed, {enhanced_english_prompt}"
-
-        logging.info(f"Оригинал: {clean_prompt} -> Финальный промпт: {final_image_prompt}")
-
-        encoded_prompt = urllib.parse.quote(final_image_prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={random.randint(1, 999999)}"
-
-        await bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-        try:
-            await message.reply_photo(
-                photo=image_url,
-                caption=f"🎨 <b>{html.escape(clean_prompt)}</b>",
-                parse_mode="HTML"
-            )
-            return
-        except Exception as e:
-            logging.error(f"Ошибка генерации картинки: {e}")
-
-    if chat_id not in chat_custom_instructions:
-        chat_custom_instructions[chat_id] = BASE_INSTRUCTION
-
-    # --- ДИНАМИЧЕСКОЕ ИЗМЕНЕНИЕ РОЛИ / ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЕМ ---
-    role_triggers = ["веди себя как", "теперь ты", "приказ:", "роль:", "будь", "стань"]
-    if any(trig in lower_text for trig in role_triggers):
-        chat_custom_instructions[chat_id] = (
-            f"SYSTEM OVERRIDE: Ты — Copilot AI. Пользователь задал тебе новое правило поведения/роль. "
-            f"Строго следуй этому указанию, сохраняя при этом свою идентичность Copilot AI:\n\n"
-            f"ПРИКАЗ ПОЛЬЗОВАТЕЛЯ: {text_content}"
-        )
-        await message.reply("🔄 Характер успешно переключен под твои требования!", parse_mode="HTML")
-        return
-
-    lower_clean = text_content.lower().strip()
-    if lower_clean in ["споки", "спокойной ночи", "спать", "пока", "бб"]:
-        await message.reply("Сладких снов, бро! 🌙🤖", parse_mode="HTML")
-        return
-
+async def save_and_sync_settings():
     try:
-        chosen_emoji = parse_requested_emoji(text_content)
-        if not chosen_emoji:
-            chosen_emoji = "🔥" if message.photo else random.choice(["👍", "🔥", "⚡️", "❤️", "🗿"])
-
-        target_message_id = message.reply_to_message.message_id if message.reply_to_message else message.message_id
-        await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=target_message_id,
-            reaction=[types.ReactionTypeEmoji(emoji=chosen_emoji)]
-        )
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(antispam_settings, f, ensure_ascii=False, indent=4)
+        await push_file_to_github(SETTINGS_FILE)
     except Exception as e:
-        logging.error(f"Ошибка реакций: {e}")
+        logging.error(f"Ошибка сохранения настроек: {e}")
 
-    if chat_id not in chat_history:
-        chat_history[chat_id] = []
 
-    await bot.send_chat_action(chat_id=chat_id, action="typing")
+async def set_main_menu(bot: Bot):
+    main_menu_commands = [
+        BotCommand(command="ban", description="Забанить пользователя (в ответ)"),
+        BotCommand(command="unban", description="Разбанить пользователя (в ответ)"),
+        BotCommand(command="mute", description="Замутить пользователя (в ответ)"),
+        BotCommand(command="unmute", description="Размутить пользователя (в ответ)"),
+        BotCommand(command="rules", description="Показать правила из описания"),
+        BotCommand(command="addmod", description="Добавить модератора (в ответ)"),
+        BotCommand(command="delmod", description="Убрать модератора (в ответ)"),
+        BotCommand(command="mods", description="Список модераторов бота"),
+        BotCommand(command="antispam", description="Управление защитой от накрутки"),
+    ]
+    await bot.set_my_commands(main_menu_commands)
+
+
+async def is_owner(message: types.Message) -> bool:
+    if message.chat.type == "private":
+        return True
+    try:
+        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        return member.status == "creator"
+    except Exception:
+        return False
+
+
+async def can_manage(message: types.Message) -> bool:
+    if await is_owner(message):
+        return True
+    chat_mods = group_moderators.get(message.chat.id, {})
+    if message.from_user.id in chat_mods:
+        return True
+    return False
+
+
+# АНТИСПАМ (ПЕРЕХВАТ ВХОДА НОВЫХ УЧАСТНИКОВ)
+@dp.message(F.new_chat_members)
+async def on_user_joined(message: types.Message):
+    chat_id = message.chat.id
     
-    user_content_payload = []
-    if text_content:
-        user_content_payload.append({"type": "text", "text": text_content})
-    if image_base64:
-        user_content_payload.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-        })
-
-    chat_history[chat_id].append({"role": "user", "content": user_content_payload if image_base64 else text_content})
-    
-    if len(chat_history[chat_id]) > 4:
-        chat_history[chat_id] = chat_history[chat_id][-4:]
-
-    sanitized_history = []
-    for msg in chat_history[chat_id]:
-        if isinstance(msg["content"], list):
-            if msg == chat_history[chat_id][-1]:
-                sanitized_history.append(msg)
-            else:
-                sanitized_history.append({"role": msg["role"], "content": "[Картинка из прошлого сообщения]"})
-        else:
-            sanitized_history.append(msg)
-
-    messages_payload = [{"role": "system", "content": chat_custom_instructions[chat_id]}]
-    messages_payload.extend(sanitized_history)
-
-    if not client:
-        await message.reply("Ошибка: GROQ_API_KEY не задан!")
+    if not antispam_settings.get(chat_id, True):
         return
 
-    loop = asyncio.get_running_loop()
-    reply_text = None
-    last_error = None
-
-    for model_name in CANDIDATE_MODELS:
-        try:
-            response = await loop.run_in_executor(
-                None,
-                lambda m=model_name: client.chat.completions.create(
-                    model=m,
-                    messages=messages_payload,
-                    max_tokens=1000
-                )
-            )
-            reply_text = response.choices[0].message.content
-            if reply_text:
-                break
-        except Exception as e:
-            last_error = e
-            logging.warning(f"Модель {model_name} словила лимит/ошибку: {e}")
+    for user in message.new_chat_members:
+        if user.is_bot:
             continue
 
-    if reply_text:
-        chat_history[chat_id].append({"role": "assistant", "content": reply_text})
-        
-        processed_text = clean_text_for_telegram(reply_text)
-
         try:
-            await message.reply(processed_text, parse_mode="HTML")
-        except Exception as err:
-            logging.error(f"Ошибка отправки HTML: {err}")
-            try:
-                await message.reply(html.escape(processed_text), parse_mode="HTML")
-            except Exception:
-                await message.reply(reply_text)
-    else:
-        await message.reply(
-            "⚠️ <b>Лимит бесплатных токенов Groq исчерпан!</b>\n"
-            "Подожди пару минут или сделай /reset.",
-            parse_mode="HTML"
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user.id,
+                permissions=ChatPermissions(can_send_messages=False)
+            )
+        except Exception as e:
+            logging.error(f"Не удалось ограничить права новичку {user.id}: {e}")
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Я не бот (Нажми меня)", callback_data=f"verify_{user.id}")]
+        ])
+
+        msg = await message.answer(
+            f"Привет, {user.full_name}!\n\nВ этом чате работает защита от накрутки. Подтверди, что ты человек, нажав кнопку ниже в течение **5 минут**, иначе система тебя исключит.",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
 
+        async def check_verification(u_id=user.id, m_obj=msg):
+            await asyncio.sleep(300)
+            try:
+                if chat_id in verified_users and verified_users[chat_id].get(u_id):
+                    return  
+                
+                member = await bot.get_chat_member(chat_id, u_id)
+                if member.status in ("restricted", "member"):
+                    await bot.ban_chat_member(chat_id, u_id)
+                    await bot.unban_chat_member(chat_id, u_id)
+                    await m_obj.edit_text("Пользователь не прошёл верификацию за 5 минут и был исключён.")
+            except Exception as e:
+                logging.error(f"Ошибка таймера верификации: {e}")
+
+        asyncio.create_task(check_verification())
+
+
+# УВЕДОМЛЕНИЕ О ВЫХОДЕ УЧАСТНИКА ИЗ ЧАТА
+@dp.message(F.left_chat_member)
+async def on_user_left(message: types.Message):
+    user = message.left_chat_member
+    if not user or user.is_bot:
+        return
+
+    target_name = user.full_name
+    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
+    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
+
+    await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
+
+
+# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
+@dp.callback_query(F.data.startswith("verify_"))
+async def verify_callback(callback: types.CallbackQuery):
+    target_user_id = int(callback.data.split("_")[1])
+    
+    if callback.from_user.id != target_user_id:
+        await callback.answer("Эта кнопка не для тебя!", show_alert=True)
+        return
+
+    chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+
+    if chat_id not in verified_users:
+        verified_users[chat_id] = {}
+    verified_users[chat_id][user_id] = True
+
+    try:
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_polls=True,
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
+            )
+        )
+        await callback.message.delete()
+        await callback.answer("Верификация пройдена! Добро пожаловать в чат.", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"Ошибка при выдаче прав: {e}", show_alert=True)
+
+
+# КОМАНДА /antispam СО СТАТУСОМ И ИНСТРУКЦИЕЙ
+@dp.message(F.text.lower().regexp(r"^(/antispam(@[a-zA-Z0-9_]+)?|антиспам)"))
+async def toggle_antispam(message: types.Message):
+    chat_id = message.chat.id
+    args = message.text.split()
+
+    if len(args) < 2:
+        current_status = antispam_settings.get(chat_id, True)
+        status_text = "🟢 Включена" if current_status else "🔴 Выключена"
+        
+        help_text = (
+            f"🛡 **Управление защитой от накрутки (антиспам)**\n\n"
+            f"• Текущий статус в этом чате: **{status_text}**\n\n"
+            f"**Как настроить:**\n"
+            f"• Включить защиту: `/antispam on`\n"
+            f"• Выключить защиту: `/antispam off`\n\n"
+            f"*(Защита автоматически проверяет новых участников кнопкой «Я не бот» с таймером на 5 минут)*"
+        )
+        await message.answer(help_text, parse_mode="Markdown")
+        return
+
+    if not await can_manage(message):
+        await message.reply("Только владелец или модераторы могут менять настройки защиты!")
+        return
+
+    mode = args[1].lower()
+    if mode in ("on", "вкл", "1", "true"):
+        antispam_settings[chat_id] = True
+        await save_and_sync_settings()
+        await message.answer("🟢 Защита от накрутки успешно **включена** для этого чата!", parse_mode="Markdown")
+    elif mode in ("off", "выкл", "0", "false"):
+        antispam_settings[chat_id] = False
+        await save_and_sync_settings()
+        await message.answer("🔴 Защита от накрутки **выключена**.", parse_mode="Markdown")
+    else:
+        await message.answer("❌ Неверный параметр! Используйте: `/antispam on` или `/antispam off`", parse_mode="Markdown")
+
+
+# ДОБАВИТЬ МОДЕРАТОРА
+@dp.message(F.text.lower().regexp(r"^(/addmod(@[a-zA-Z0-9_]+)?|добавить модератора)"))
+async def add_moderator(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("Только владелец группы может назначать модераторов!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай на сообщение пользователя!")
+        return
+
+    target_user = message.reply_to_message.from_user
+    chat_id = message.chat.id
+
+    if chat_id not in group_moderators:
+        group_moderators[chat_id] = {}
+
+    group_moderators[chat_id][target_user.id] = target_user.full_name
+    await save_and_sync_moderators()
+    await message.answer(f"Пользователь {target_user.full_name} назначен модератором и сохранен!")
+
+
+# УБРАТЬ МОДЕРАТОРА
+@dp.message(F.text.lower().regexp(r"^(/delmod(@[a-zA-Z0-9_]+)?|убрать модератора)"))
+async def remove_moderator(message: types.Message):
+    if not await is_owner(message):
+        await message.reply("Только владелец группы может снимать модераторов!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай на сообщение модератора!")
+        return
+
+    target_user = message.reply_to_message.from_user
+    chat_id = message.chat.id
+
+    chat_mods = group_moderators.get(chat_id, {})
+    if target_user.id in chat_mods:
+        del chat_mods[target_user.id]
+        await save_and_sync_moderators()
+        await message.answer(f"Пользователь {target_user.full_name} снят с поста модератора.")
+    else:
+        await message.answer("Пользователь не найден в модераторах этого чата.")
+
+
+# СПИСОК МОДЕРАТОРОВ
+@dp.message(F.text.lower().regexp(r"^(/mods(@[a-zA-Z0-9_]+)?|список администраторов|модераторы|админы)"))
+async def list_moderators(message: types.Message):
+    chat_id = message.chat.id
+    chat_mods = group_moderators.get(chat_id, {})
+
+    if not chat_mods:
+        await message.answer("У этого бота пока нет модераторов в данном чате.")
+        return
+    
+    text = "Список модераторов этого чата:\n\n"
+    for idx, (uid, name) in enumerate(chat_mods.items(), 1):
+        text += f"{idx}. {name} (ID: `{uid}`)\n"
+        
+    await message.answer(text, parse_mode="Markdown")
+
+
+# ПРАВИЛА
+@dp.message(F.text.lower().regexp(r"^(/rules(@[a-zA-Z0-9_]+)?|правила|каталог правил)"))
+async def text_rules(message: types.Message):
+    if message.chat.type == "private":
+        await message.answer("Используй эту команду в группе!")
+        return
+        
+    try:
+        chat_info = await bot.get_chat(message.chat.id)
+        if chat_info.description:
+            await message.answer(f"Правила группы:\n\n{chat_info.description}", parse_mode="Markdown")
+        else:
+            await message.answer("У группы нет описания с правилами!")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+
+# БАН
+@dp.message(F.text.lower().regexp(r"^(/ban(@[a-zA-Z0-9_]+)?|бан)"))
+async def text_ban(message: types.Message):
+    if not await can_manage(message):
+        await message.reply("Нет прав!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай на сообщение нарушителя!")
+        return
+
+    target_user = message.reply_to_message.from_user
+    args = message.text.split()
+    until_date = None
+    time_text = "навсегда"
+
+    if len(args) >= 2:
+        try:
+            for i, arg in enumerate(args):
+                if arg.isdigit():
+                    amount = int(arg)
+                    unit = args[i+1].lower() if i+1 < len(args) else "мин"
+                    
+                    if "час" in unit or "ч" in unit:
+                        duration_minutes = amount * 60
+                        time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
+                    elif "д" in unit:
+                        duration_minutes = amount * 24 * 60
+                        time_text = f"на {amount} день/дней"
+                    else:
+                        duration_minutes = amount
+                        time_text = f"на {amount} минут(ы)"
+                    
+                    until_date = datetime.now() + timedelta(minutes=duration_minutes)
+                    break
+        except Exception:
+            pass
+
+    try:
+        if until_date:
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id, until_date=until_date)
+        else:
+            await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
+            
+        await message.answer(f"Пользователь {target_user.full_name} забанен {time_text}.")
+    except Exception as e:
+        await message.answer(f"Ошибка бана: {e}")
+
+
+# РАЗБАН
+@dp.message(F.text.lower().regexp(r"^(/unban(@[a-zA-Z0-9_]+)?|разбан)"))
+async def text_unban(message: types.Message):
+    if not await can_manage(message):
+        await message.reply("Нет прав!")
+        return
+    
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай!")
+        return
+    
+    target_user = message.reply_to_message.from_user
+    try:
+        await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
+        await message.answer(f"Пользователь {target_user.full_name} разбанен.")
+    except Exception as e:
+        await message.answer(f"Ошибка разбана: {e}")
+
+
+# МУТ
+@dp.message(F.text.lower().regexp(r"^(/mute(@[a-zA-Z0-9_]+)?|мут)"))
+async def text_mute(message: types.Message):
+    if not await can_manage(message):
+        await message.reply("Нет прав!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай!")
+        return
+    
+    target_user = message.reply_to_message.from_user
+    args = message.text.split()
+    until_date = None
+    time_text = "навсегда"
+
+    if len(args) >= 2:
+        try:
+            for i, arg in enumerate(args):
+                if arg.isdigit():
+                    amount = int(arg)
+                    unit = args[i+1].lower() if i+1 < len(args) else "мин"
+                    
+                    if "час" in unit or "ч" in unit:
+                        duration_minutes = amount * 60
+                        time_text = f"на {amount} час(а)" if amount < 5 else f"на {amount} часов"
+                    elif "д" in unit:
+                        duration_minutes = amount * 24 * 60
+                        time_text = f"на {amount} день/дней"
+                    else:
+                        duration_minutes = amount
+                        time_text = f"на {amount} минут(ы)"
+                        
+                    until_date = datetime.now() + timedelta(minutes=duration_minutes)
+                    break
+        except Exception:
+            pass
+
+    try:
+        await message.chat.restrict(
+            user_id=target_user.id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until_date
+        )
+        await message.answer(f"Пользователь {target_user.full_name} замучен {time_text}.")
+    except Exception as e:
+        await message.answer(f"Ошибка мута: {e}")
+
+
+# РАЗМУТ
+@dp.message(F.text.lower().regexp(r"^(/unmute(@[a-zA-Z0-9_]+)?|размут)"))
+async def text_unmute(message: types.Message):
+    if not await can_manage(message):
+        await message.reply("Нет прав!")
+        return
+
+    if not message.reply_to_message:
+        await message.reply("Сделай реплай!")
+        return
+
+    target_user = message.reply_to_message.from_user
+    try:
+        await message.chat.restrict(
+            user_id=target_user.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_polls=True,
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
+            )
+        )
+        await message.answer(f"Пользователь {target_user.full_name} размучен.")
+    except Exception as e:
+        await message.answer(f"Ошибка размута: {e}")
+
+
 async def main():
-    print(">>> Copilot AI запущен! <<<")
-    await dp.start_polling(bot)
+    await set_main_menu(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
