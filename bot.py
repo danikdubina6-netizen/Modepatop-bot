@@ -213,7 +213,7 @@ async def on_user_left(message: types.Message):
     await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
 
 
-# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
+# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ" (С РАЗРЕШЕНИЕМ СТИКЕРОВ И GIF)
 @dp.callback_query(F.data.startswith("verify_"))
 async def verify_callback(callback: types.CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
@@ -242,6 +242,7 @@ async def verify_callback(callback: types.CallbackQuery):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
+                can_send_other_messages=True,  # Разрешает стикеры, GIF и анимации
                 can_add_web_page_previews=True,
                 can_change_info=False,
                 can_invite_users=True,
@@ -488,7 +489,7 @@ async def text_mute(message: types.Message):
         await message.answer(f"Ошибка мута: {e}")
 
 
-# РАЗМУТ
+# РАЗМУТ (С РАЗРЕШЕНИЕМ СТИКЕРОВ И GIF)
 @dp.message(F.text.lower().regexp(r"^(/unmute(@[a-zA-Z0-9_]+)?|размут)"))
 async def text_unmute(message: types.Message):
     if not await can_manage(message):
@@ -512,6 +513,7 @@ async def text_unmute(message: types.Message):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
+                can_send_other_messages=True,  # Разрешает стикеры, GIF и анимации
                 can_add_web_page_previews=True,
                 can_change_info=False,
                 can_invite_users=True,
