@@ -151,6 +151,14 @@ async def can_manage(message: types.Message) -> bool:
     return False
 
 
+# Вспомогательная функция для красивого упоминания пользователя
+def format_user_mention(user: types.User) -> str:
+    name = user.full_name
+    if user.username:
+        return f"[{name}](@{user.username})"
+    return f"[{name}](tg://user?id={user.id})"
+
+
 # АНТИСПАМ (ПЕРЕХВАТ ВХОДА НОВЫХ УЧАСТНИКОВ)
 @dp.message(F.new_chat_members)
 async def on_user_joined(message: types.Message):
@@ -199,21 +207,26 @@ async def on_user_joined(message: types.Message):
         asyncio.create_task(check_verification())
 
 
-# УВЕДОМЛЕНИЕ О ВЫХОДЕ УЧАСТНИКА ИЗ ЧАТА
+# ОТСЛЕЖИВАНИЕ УДАЛЕНИЯ УЧАСТНИКА АДМИНИСТРАТОРОМ (ИГНОРИРУЕМ САМОСТОЯТЕЛЬНЫЙ ВЫХОД)
 @dp.message(F.left_chat_member)
 async def on_user_left(message: types.Message):
     user = message.left_chat_member
     if not user or user.is_bot:
         return
 
-    target_name = user.full_name
-    target_mention = f"@{user.username}" if user.username else f"ID: `{user.id}`"
-    target_str = f"[{target_name}]({target_mention})" if user.username else f"{target_name} (ID: `{user.id}`)"
+    # Проверяем, кто совершил действие: если это сам пользователь (выйдя из чата), message.from_user.id == user.id
+    # В таком случае бот ничего не пишет.
+    # Если же ID разные — значит, участника удалил кто-то другой (админ).
+    if message.from_user and message.from_user.id != user.id:
+        admin_mention = format_user_mention(message.from_user)
+        user_mention = format_user_mention(user)
+        await message.answer(
+            f"🚫 Администратор {admin_mention} удалил участника {user_mention} из группы.",
+            parse_mode="Markdown"
+        )
 
-    await message.answer(f"Участник {target_str} покинул чат.", parse_mode="Markdown")
 
-
-# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ" (С РАЗРЕШЕНИЕМ СТИКЕРОВ И GIF)
+# ОБРАБОТКА НАЖАТИЯ НА КНОПКУ "Я НЕ БОТ"
 @dp.callback_query(F.data.startswith("verify_"))
 async def verify_callback(callback: types.CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
@@ -242,7 +255,7 @@ async def verify_callback(callback: types.CallbackQuery):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
-                can_send_other_messages=True,  # Разрешает стикеры, GIF и анимации
+                can_send_other_messages=True,
                 can_add_web_page_previews=True,
                 can_change_info=False,
                 can_invite_users=True,
@@ -416,12 +429,13 @@ async def text_ban(message: types.Message):
         else:
             await bot.ban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
             
-        await message.answer(f"Пользователь {target_user.full_name} забанен {time_text}.")
+        user_mention = format_user_mention(target_user)
+        await message.answer(f"🔨 Пользователь {user_mention} забанен {time_text}.", parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"Ошибка бана: {e}")
 
 
-# РАЗБАН
+# РАЗБАН (С УВЕДОМЛЕНИЕМ)
 @dp.message(F.text.lower().regexp(r"^(/unban(@[a-zA-Z0-9_]+)?|разбан)"))
 async def text_unban(message: types.Message):
     if not await can_manage(message):
@@ -435,7 +449,8 @@ async def text_unban(message: types.Message):
     target_user = message.reply_to_message.from_user
     try:
         await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
-        await message.answer(f"Пользователь {target_user.full_name} разбанен.")
+        user_mention = format_user_mention(target_user)
+        await message.answer(f"🔓 Пользователь {user_mention} успешно разбанен.", parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"Ошибка разбана: {e}")
 
@@ -455,6 +470,7 @@ async def text_mute(message: types.Message):
     args = message.text.split()
     until_date = None
     time_text = "навсегда"
+    duration_minutes = None
 
     if len(args) >= 2:
         try:
@@ -484,12 +500,39 @@ async def text_mute(message: types.Message):
             permissions=ChatPermissions(can_send_messages=False),
             until_date=until_date
         )
-        await message.answer(f"Пользователь {target_user.full_name} замучен {time_text}.")
+        user_mention = format_user_mention(target_user)
+        await message.answer(f"🔇 Пользователь {user_mention} замучен {time_text}.", parse_mode="Markdown")
+
+        # Если мут был установлен на конкретное время, запускаем фоновую задачу для оповещения об окончании
+        if duration_minutes:
+            chat_id = message.chat.id
+            u_id = target_user.id
+            u_name = target_user.full_name
+            u_uname = target_user.username
+
+            async def auto_unmute_notify():
+                await asyncio.sleep(duration_minutes * 60)
+                try:
+                    # Проверяем статус: если пользователь все еще в чате, отправляем уведомление, что мут истёк
+                    member = await bot.get_chat_member(chat_id, u_id)
+                    if member.status == "restricted":
+                        temp_user = types.User(id=u_id, is_bot=False, first_name=u_name, username=u_uname)
+                        mention = format_user_mention(temp_user)
+                        await bot.send_message(
+                            chat_id,
+                            f"🔊 Время мута для пользователя {mention} истекло, ограничения сняты.",
+                            parse_mode="Markdown"
+                        )
+                except Exception as ex:
+                    logging.error(f"Ошибка авто-оповещения мута: {ex}")
+
+            asyncio.create_task(auto_unmute_notify())
+
     except Exception as e:
         await message.answer(f"Ошибка мута: {e}")
 
 
-# РАЗМУТ (С РАЗРЕШЕНИЕМ СТИКЕРОВ И GIF)
+# РАЗМУТ (С УВЕДОМЛЕНИЕМ)
 @dp.message(F.text.lower().regexp(r"^(/unmute(@[a-zA-Z0-9_]+)?|размут)"))
 async def text_unmute(message: types.Message):
     if not await can_manage(message):
@@ -513,14 +556,15 @@ async def text_unmute(message: types.Message):
                 can_send_video_notes=True,
                 can_send_voice_notes=True,
                 can_send_polls=True,
-                can_send_other_messages=True,  # Разрешает стикеры, GIF и анимации
+                can_send_other_messages=True,
                 can_add_web_page_previews=True,
                 can_change_info=False,
                 can_invite_users=True,
                 can_pin_messages=False
             )
         )
-        await message.answer(f"Пользователь {target_user.full_name} размучен.")
+        user_mention = format_user_mention(target_user)
+        await message.answer(f"🔊 Мут для пользователя {user_mention} был снят.", parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"Ошибка размута: {e}")
 
@@ -532,4 +576,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
